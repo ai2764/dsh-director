@@ -60,6 +60,29 @@ test('submits a raw graph, unloads llama-swap, and concludes the turn', async ()
   assert.equal(result.terminal, true)
 })
 
+test('rejects string-valued ComfyUI connection indices before POST', async () => {
+  const requests=[]
+  const submit=createSubmitComfyVideo({fetchImpl:async url=>{requests.push(String(url));throw new Error('network should not be used')}})
+  await assert.rejects(()=>submit({workflow:{
+    '136':{class_type:'Source',inputs:{}},
+    '125':{class_type:'Consumer',inputs:{latent_image:['136','1']}},
+  },validate_only:true},{signal:undefined}),/node 125.*latent_image.*\["136", 1\]/i)
+  assert.deepEqual(requests,[])
+})
+
+test('reports all malformed connection indices in one preflight error', async () => {
+  const submit=createSubmitComfyVideo({fetchImpl:async()=>{throw new Error('network should not be used')}})
+  await assert.rejects(()=>submit({workflow:{
+    '201':{class_type:'LoadImage',inputs:{}},
+    '202':{class_type:'LoadImage',inputs:{}},
+    '136':{class_type:'Consumer',inputs:{'ref_images.ref_image_0':['201','0'],'ref_images.ref_image_1':['202','0']}},
+  },validate_only:true},{}),error=>{
+    assert.match(error.message,/136.*ref_images\.ref_image_0/)
+    assert.match(error.message,/136.*ref_images\.ref_image_1/)
+    return true
+  })
+})
+
 test('parses a string prompt wrapper without nesting it again', async () => {
   const calls = []
   const fetchImpl = async (url, init = {}) => {

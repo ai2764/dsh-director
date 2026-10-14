@@ -1,6 +1,6 @@
 {
   "name": "dsh-director",
-  "version": "0.1.29",
+  "version": "0.1.32",
   "description": "Director tools and skills, optional official H3 guide downloads, and conversation media previews for DeepSeek Harness Web",
   "license": "MIT",
   "type": "module",

@@ -4,7 +4,7 @@ An unofficial Director plugin for DeepSeek Harness Web. Turn a rough idea into a
 reviewed shot plan, bind visual references, submit local ComfyUI jobs, and review
 images/videos inside the conversation. **No Director Studio dependency.**
 
-Local source-review candidate, version 0.1.29. Nothing is published automatically.
+Local source-review candidate, version 0.1.32. Nothing is published automatically.
 Original implementation and local skill wrappers use MIT. Official MiniMax prompt
 guides are not included; users can obtain pinned copies separately under upstream
 terms after native human confirmation. See [LICENSE](LICENSE),
@@ -55,7 +55,7 @@ For a permitted local installation:
 ```powershell
 npm.cmd ci
 npm.cmd pack
-dsh.cmd plugin --profile web add C:/path/to/dsh-director-0.1.29.tgz
+dsh.cmd plugin --profile web add C:/path/to/dsh-director-0.1.32.tgz
 ```
 
 `prepack` builds the runtime automatically. In the Web profile's `package.json`,

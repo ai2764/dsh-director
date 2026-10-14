@@ -33,8 +33,9 @@ function withoutReferenceProhibitions(text){
 // prohibitions do not. Numbered targets refer to the card's Reference #N.
 function referenceMutations(text){
   const requests=[];
-  for(const originalLine of text.split(/[\n。.!！]/u)){
-    const line=withoutSocketRewrite(withoutReferenceProhibitions(originalLine));
+  for(const originalLine of text.split(/[\n。.!！;；]/u)){
+    const line=withoutSocketRewrite(withoutReferenceProhibitions(originalLine)).replace(/`[^`]*`/gu,'').replace(/\bshot\s*\/\s*ref(?:erence)?\s+review\s+card\b/giu,'review card');
+    if(/^\s*(?:your|the|that)\b.*\bcall was not an authorized reference edit\b|^\s*it attempted to\b/iu.test(line))continue;
     if(/(?:不要|不需要|不用|禁止|勿|别|do not|don't|no new|without)/iu.test(line))continue;
     // Production instructions and schema declarations are not edits to the
     // reference list displayed on a review card.
@@ -48,7 +49,7 @@ function referenceMutations(text){
     const proseProperty='\\s+(?:wording|provenance)\\b(?![-\\w]|\\s+(?:image|picture|reference|ref|file)s?\\b)';
     const visualObject=`${object}(?!${proseProperty})`;
     const codingObject='(?:工作流|模型|提示词|节点|分辨率|\\b(?:workflow|model|prompt|node|resolution|generator|loaders?\\d*|sockets?)\\b)';
-    const span=`(?:(?!${codingObject}|\\bunchanged\\b|不变|保持)[^,，;；]){0,80}?`;
+    const span=`(?:(?!${codingObject}|\\bunchanged\\b|\\bunless\\b|不变|保持)[^,，;；]){0,80}?`;
     const notCodingObject=`(?!\\s*(?:的)?${codingObject})`;
     const targets=action=>new RegExp(`${action}${span}${visualObject}${notCodingObject}|${visualObject}${span}${action}${notCodingObject}`,'iu').test(line);
     const operations=[];
@@ -57,8 +58,9 @@ function referenceMutations(text){
     if(targets('(?:加入|添加|增加|新增|补充|补上|加|\\badd\\b)')||new RegExp(`^\\s*(?:please\\s+)?include${span}${visualObject}${notCodingObject}`,'iu').test(line))operations.push('add');
     if(!operations.length)continue;
     const target=/第\s*([一二三四五六七八九十\d]+)\s*(?:张|个|幅)?/u.exec(line)?.[1]??/(?:ref(?:erence)?(?:\s*(?:image|picture))?|picture|image)\s*#?\s*(\d+)\b/iu.exec(line)?.[1]??/#\s*(\d+)/u.exec(line)?.[1];
+    const clipOrdinal=/\b(?:clip|c)\s*[-#]?\s*(\d+)\b/iu.exec(line)?.[1];
     const chinese={一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10,十一:11,十二:12};
-    requests.push({text:originalLine.trim(),operations,target:target===undefined?undefined:chinese[target]??Number(target)});
+    requests.push({text:originalLine.trim(),operations,target:target===undefined?undefined:chinese[target]??Number(target),clipOrdinal:clipOrdinal===undefined?undefined:Number(clipOrdinal)});
   }
   return requests;
 }
@@ -121,20 +123,33 @@ export function proposalState(entries,version,card){
   const applies=(request,value)=>!request.clips.length||request.clips.some(id=>clips(value).includes(id));
   for(const entry of [...entries].sort((a,b)=>a.seq-b.seq)){
     if(entry.kind==='user'){
-      for(const request of referenceMutations(entry.text))requests.push({...request,clips:latest?clips(latest.value):[],baseline:latestHashes,targetHash:request.target===undefined?undefined:latest?.value.items?.[request.target-1]?.sha256?.toLowerCase()});
+      for(const request of referenceMutations(entry.text)){
+        const existingClips=latest?clips(latest.value):[];
+        const clipId=request.clipOrdinal===undefined?undefined:existingClips[request.clipOrdinal-1];
+        let baseline=latestHashes;
+        if(request.clipOrdinal!==undefined){
+          try{baseline=clipId?boundHashes(latest.value,clipId):null;}
+          catch{baseline=null;}
+        }
+        requests.push({...request,clips:clipId?[clipId]:existingClips,clipId,baseline,targetHash:request.target===undefined?undefined:latest?.value.items?.[request.target-1]?.sha256?.toLowerCase()});
+      }
       if(latest&&!referenceError&&confirmation(entry.text,latest.value.proposal.version)){approvedSeq=entry.seq;status='confirmed';}
       else if(latest&&!readOnlyReply(entry.text)){approvedSeq=undefined;status='changes_requested';}
     }else if(entry.kind==='proposal'){
       latest=entry;approvedSeq=undefined;referenceError=undefined;status='awaiting_confirmation';
       try{latestHashes=boundHashes(entry.value);}
       catch(error){latestHashes=null;referenceError=error.message;continue;}
-      for(let i=requests.length-1;i>=0;i--)if(applies(requests[i],entry.value)&&fulfilled(requests[i],latestHashes))requests.splice(i,1);
+      for(let i=requests.length-1;i>=0;i--)if(applies(requests[i],entry.value)){
+        let hashes=latestHashes;
+        if(requests[i].clipId)try{hashes=boundHashes(entry.value,requests[i].clipId);}catch{hashes=null;}
+        if(Array.isArray(hashes)&&fulfilled(requests[i],hashes))requests.splice(i,1);
+      }
     }
   }
   if(!latest)return {status:'unverified',pending:requests.map(r=>r.text)};
   // Old cards copied auto-detected requests into pending_references. Recompute
   // those from their human source; keep genuinely declared missing assets.
-  const legacyInferred=t=>userLines.has(t)&&(referenceRequest(t)||withoutSocketRewrite(t)!==t&&!referenceRequest(t)||withoutReferenceProhibitions(t)!==t&&!referenceRequest(t)||/^\s*h3_review\s+references\s+include\b/iu.test(t)||/^\s*THIS TURN\b.*\bgenerate\b.*\bLayouts?\b/iu.test(t)||/^\s*Remove\b.*\bloaders?\d*\b.*\bref sockets\b/iu.test(t));
+  const legacyInferred=t=>userLines.has(t)&&(referenceRequest(t)||!referenceRequest(t)&&/\b(?:director_edit_review|shot\s*\/\s*ref\s+review\s+card)\b/iu.test(t)||/^\s*(?:keep|preserve|retain)\b[^;；]{0,200}\b(?:refs?|references?|images?|pictures?|layouts?)\b[^;；]{0,80}\bunless\b/iu.test(t)||withoutSocketRewrite(t)!==t&&!referenceRequest(t)||withoutReferenceProhibitions(t)!==t&&!referenceRequest(t)||/^\s*h3_review\s+references\s+include\b/iu.test(t)||/^\s*THIS TURN\b.*\bgenerate\b.*\bLayouts?\b/iu.test(t)||/^\s*Remove\b.*\bloaders?\d*\b.*\bref sockets\b/iu.test(t));
   const relevant=requests.filter(r=>applies(r,latest.value));
   const pending=[...relevant.map(r=>r.text),...(latest.value.proposal.pending_references??[]).filter(t=>!legacyInferred(t))];
   const unverifiable=relevant.filter(r=>!Array.isArray(r.baseline)).map(r=>r.text);

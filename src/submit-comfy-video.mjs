@@ -145,6 +145,17 @@ async function applyH3Prompt(payload, args, readFileImpl) {
   return copy
 }
 
+function validateConnectionIndices(graph) {
+  const errors=[]
+  for (const [nodeId, node] of Object.entries(graph)) for (const [inputName, binding] of Object.entries(node?.inputs ?? {})) {
+    if (!Array.isArray(binding) || binding.length !== 2 || !Object.hasOwn(graph, String(binding[0]))) continue
+    if (Number.isInteger(binding[1]) && binding[1] >= 0) continue
+    const index=Number.isInteger(Number(binding[1]))&&Number(binding[1])>=0?Number(binding[1]):0
+    errors.push(`node ${nodeId} input ${inputName} has ${JSON.stringify(binding)}; use [${JSON.stringify(String(binding[0]))}, ${index}]`)
+  }
+  if(errors.length)throw new Error(`submit_comfy_job: ${errors.length} invalid ComfyUI connection index(es); output indices must be numeric non-negative integers, not strings. PowerShell JSON rewrites can turn 0 into "0".\n${errors.slice(0,12).join('\n')}${errors.length>12?`\n...and ${errors.length-12} more`:''}`)
+}
+
 function validateH3Ref2AVGraph(graph) {
   const matches = Object.values(graph).filter((node) => node?.class_type === 'MiniMaxH3ReferenceToVideo')
   if (matches.length !== 1) {
@@ -482,6 +493,7 @@ export function createSubmitComfyVideo({
       readFileImpl,
     })
     const payload = await applyH3Prompt(loaded, args, readFileImpl)
+    validateConnectionIndices(payload.prompt)
     const generation = h3Generation(payload.prompt)
     let preflight
     if (args.intent === 'h3_ref2av' || Object.values(payload.prompt).some(node => node?.class_type === 'MiniMaxH3ReferenceToVideo')) {

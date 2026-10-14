@@ -137,6 +137,19 @@ test('pending ref edits stay with their clips instead of blocking unrelated clip
   entries.push(proposal(5,'return',[face]),user(6,'ok'));
   assert.equal(proposalState(entries,'return').status,'references_pending');
 });
+test('a reference removed from one clip is verified against that clip, not the card-wide union',async()=>{
+  const {proposalState}=await api();
+  const multi=(seq,version,secondRefs)=>({seq,kind:'proposal',value:{items:[{type:'image',sha256:face},{type:'image',sha256:layout}],proposal:{version,shots:[
+    {clip_id:'opening',reference_numbers:[1,2]},
+    {clip_id:'mother_reveal',reference_numbers:secondRefs}
+  ]}}});
+  for(const instruction of ['Remove Picture 1 from clip 2 only','Remove Picture 1 from C2 only']){
+    const before=multi(1,'v1',[1,2]);
+    const after=multi(3,'v2',[2]);
+    assert.deepEqual(proposalState([before,user(2,instruction),after],'v2').pending,[],instruction);
+    assert.deepEqual(proposalState([before,user(2,instruction),multi(3,'v2',[1,2])],'v2').pending,[instruction],instruction);
+  }
+});
 
 test('changing a workflow for image generation does not demand reference replacement',async()=>{
   const {proposalState}=await api();
@@ -241,6 +254,25 @@ test('provenance and wording descriptors do not hide explicit image edits',async
 });
 
 const noListInstruction='Use that exact passing argument object, no script rebuild, prompt rewrite, card, reference change or new generation mode';
+test('conditional preservation of existing references is not a reference edit',async()=>{
+  const {proposalState}=await api();
+  const instruction='Keep the story, exact dialogue, identity/wardrobe choices, and the nine selected references unless a specific correction requires a change.';
+  const entries=[proposal(1,'v1',[face,layout]),user(2,instruction),proposal(3,'v2',[face,layout])];
+  assert.deepEqual(proposalState(entries,'v2').pending,[]);
+  const oldCard=proposal(3,'v2',[face,layout]);
+  oldCard.value.proposal.pending_references=[instruction.replace(/\.$/u,'')];
+  assert.deepEqual(proposalState([proposal(1,'v1',[face,layout]),user(2,instruction),oldCard],'v2').pending,[]);
+});
+test('tool-call retrospection and shot/ref card updates do not request image edits',async()=>{
+  const {proposalState}=await api();
+  const entries=[proposal(1,'v2',[face,layout]),
+    user(2,"Your `director_edit_review remove reference_number:1` call was not an authorized reference edit; it attempted to remove Tao's identity image while trying to clear a false pending-reference state."),
+    user(3,'Now update the shot/ref review card to v3'),
+    proposal(4,'v3',[face,layout])];
+  assert.deepEqual(proposalState(entries,'v3').pending,[]);
+  entries.push(user(5,'Please remove reference #2 from the shot/ref review card'));
+  assert.deepEqual(proposalState(entries,'v3').pending,['Please remove reference #2 from the shot/ref review card']);
+});
 test('nominal no-list reference prohibitions preserve approved bindings',async()=>{
   const {proposalState,assertProposalSubmission}=await api();
   for(const text of [
