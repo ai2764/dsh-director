@@ -1,0 +1,30 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {build} from 'esbuild';import {createRequire} from 'node:module';import vm from 'node:vm';
+import {JSDOM} from 'jsdom';import React,{act} from 'react';import {createRoot} from 'react-dom/client';
+
+test('real media card enlarges, pauses both players and restores focus on close',async()=>{
+  const built=await build({entryPoints:['src/client/MediaCard.jsx'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic'});
+  const module={exports:{}};vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url)});
+  const {MediaCard}=module.exports;
+  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  dom.window.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  dom.window.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  let pauses=0;dom.window.HTMLMediaElement.prototype.pause=function(){pauses++;};
+  const id='v'.repeat(43),url=`/director-media/${id}?session=s`;
+  const result={kind:'director-media',version:1,session_id:'s',title:'Shot review',items:[{id,type:'video',mime:'video/mp4',filename:'clip.mp4',label:'My clip',caption:'Review me',responsibility:'continuity',url}]};
+  const block={kind:'tool-result',isError:false,content:[{type:'text',text:JSON.stringify(result)}]};
+  const root=createRoot(document.getElementById('root'));
+  await act(()=>root.render(React.createElement(MediaCard,{block,sessionId:'s'})));
+  assert.match(document.querySelector('figcaption').textContent,/clip\.mp4/);
+  assert.match(document.querySelector('figcaption').textContent,/continuity/);
+  const inline=document.querySelector('video');assert.ok(inline.controls);assert.equal(inline.autoplay,false);
+  const enlarge=document.querySelector('[data-action="enlarge"]');enlarge.focus();
+  await act(()=>enlarge.click());assert.ok(document.querySelector('dialog').open);assert.equal(document.querySelectorAll('video').length,2);
+  await act(()=>document.querySelector('[data-action="close"]').click());
+  assert.equal(document.querySelector('dialog'),null);assert.equal(document.activeElement,enlarge);assert.ok(pauses>=2);
+  const malformed={...result,items:[{...result.items[0],caption:{bad:true}}]};
+  await act(()=>root.render(React.createElement(MediaCard,{block:{...block,content:[{type:'text',text:JSON.stringify(malformed)}]},sessionId:'s'})));
+  assert.match(document.querySelector('[role="alert"]').textContent,/unavailable/);
+  await act(()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;
+});

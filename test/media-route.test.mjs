@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {mkdtemp,writeFile,open} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {harnessRequire} from './harness.mjs';
+import {Readable} from 'node:stream';
+test('real HTTP media delivery supports GET HEAD seeking and refuses requests before opening',async t=>{
+  const {createMediaHandler}=await import('../src/media-route.mjs');
+  const root=await mkdtemp(join(tmpdir(),'dsh-route-'));const path=join(root,'clip');
+  const bytes=Buffer.from('0123456789');await writeFile(path,bytes);
+  const id='a'.repeat(43);let opened=0;
+  const handler=createMediaHandler({requestRejection(req){return req.headers['x-test-deny']==='auth'?401:req.headers['x-test-deny']==='trust'?403:undefined;},store:{async openVerified(got,session){
+    if(got!==id||session!=='s')throw Object.assign(new Error('Media not found.'),{status:404});
+    opened++;return {handle:await open(path,'r'),size:10,mime:'video/mp4',filename:'clip.mp4'};
+  }}});
+  const server=createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${server.address().port}/director-media/${id}?session=s`;
+  let response=await fetch(url);assert.equal(await response.text(),'0123456789');assert.equal(response.headers.get('x-content-type-options'),'nosniff');
+  response=await fetch(url,{headers:{range:'bytes=2-5'}});assert.equal(response.status,206);assert.equal(response.headers.get('content-range'),'bytes 2-5/10');assert.equal(await response.text(),'2345');
+  response=await fetch(url,{headers:{range:'bytes=-3'}});assert.equal(await response.text(),'789');
+  response=await fetch(url,{headers:{range:'bytes=8-'}});assert.equal(await response.text(),'89');
+  response=await fetch(url,{method:'HEAD'});assert.equal(response.headers.get('content-length'),'10');assert.equal(await response.text(),'');
+  for(const range of ['bytes=10-','bytes=4-2','bytes=1-2,5-6','nonsense'])assert.equal((await fetch(url,{headers:{range}})).status,416);
+  const before=opened;
+  for(const [deny,status] of [['auth',401],['trust',403]])assert.equal((await fetch(url,{headers:{'x-test-deny':deny}})).status,status);
+  assert.equal(opened,before);
+  assert.equal((await fetch(url,{method:'POST'})).status,405);
+  assert.equal((await fetch(url.replace('session=s','session=other'))).status,404);
+  assert.equal((await fetch(url+'&session=s')).status,404);
+});
+test('native connection enforces Host Origin and enabled cookie auth before media lookup',async()=>{
+  const {HostConnectionService}=harnessRequire('@deepseek-ai/dsh-client-connection');
+  const {Context}=harnessRequire('@deepseek-ai/cordis');
+  const connection=new HostConnectionService(new Context(),['example.test:3080'],{isAuthenticated:req=>req.headers.cookie==='session=fixture'});
+  const good={headers:{host:'example.test:3080',origin:'http://example.test:3080',cookie:'session=fixture'}};
+  assert.equal(connection.requestRejection(good),undefined);
+  assert.equal(connection.requestRejection({headers:{...good.headers,cookie:undefined}}),401);
+  assert.equal(connection.requestRejection({headers:{...good.headers,host:'evil.test'}}),403);
+  assert.equal(connection.requestRejection({headers:{...good.headers,origin:'http://evil.test'}}),403);
+});
+test('socket abort and plugin disposal close active media handles',async t=>{
+  const {registerMediaRoute}=await import('../src/media-route.mjs');
+  let route,unregistered=false,closed=0;
+  const dispose=registerMediaRoute({connection:{requestRejection:()=>undefined},webServer:{register:r=>{route=r;return()=>{unregistered=true;};}}},{async openVerified(){return {size:1000000,mime:'video/mp4',filename:'clip.mp4',handle:{createReadStream:()=>new Readable({read(){this.push(Buffer.alloc(100));}}),async close(){closed++;}}};}});
+  const server=createServer(route.handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{dispose();server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${server.address().port}/director-media/${'a'.repeat(43)}?session=s`;
+  const first=await fetch(url);await first.body.cancel();
+  for(let i=0;!closed&&i<100;i++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(closed,1);
+  const second=await fetch(url);dispose();await second.body.cancel();
+  for(let i=0;closed<2&&i<100;i++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(closed,2);assert.equal(unregistered,true);
+});
+test('single range parser clamps end and rejects invalid or zero-sized ranges',async()=>{
+  const {parseSingleRange}=await import('../src/media-route.mjs');
+  assert.deepEqual(parseSingleRange('bytes=1-999',10),{start:1,end:9});
+  assert.deepEqual(parseSingleRange('bytes=-99',10),{start:0,end:9});
+  for(const h of ['bytes=-0','bytes=999999999999999999999999-','bytes=1-2,3-4'])assert.throws(()=>parseSingleRange(h,10));
+  assert.throws(()=>parseSingleRange('bytes=0-',0));
+});
