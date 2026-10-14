@@ -1,12 +1,12 @@
 {
   "name": "dsh-director",
-  "version": "0.1.28",
-  "description": "Director and H3 skills, managed ComfyUI submission, and conversation media previews for DeepSeek Harness Web",
-  "license": "SEE LICENSE IN LICENSE",
+  "version": "0.1.29",
+  "description": "Director tools and skills, optional official H3 guide downloads, and conversation media previews for DeepSeek Harness Web",
+  "license": "MIT",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {".": "./lib/index.mjs", "./client": "./lib/client.js", "./package.json": "./package.json"},
-  "files": ["lib/*.mjs", "lib/client.js", "skills", "cordis.patch.yml", "README.md", "LICENSE", "LICENSE.minimax-h3", "NOTICE", "THIRD_PARTY_NOTICES.md", "SECURITY.md"],
+  "files": ["lib/*.mjs", "lib/client.js", "skills/director", "skills/h3-prompt-writing/SKILL.md", "skills/h3-prompt-writing/references/UPSTREAM.md", "cordis.patch.yml", "README.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "SECURITY.md"],
   "engines": {"node": ">=22"},
   "scripts": {"test": "node --test src/*.test.mjs test/*.test.mjs", "build": "node scripts/build.mjs", "prepack": "npm run build"},
   "dsh": {

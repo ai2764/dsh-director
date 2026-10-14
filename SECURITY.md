@@ -5,6 +5,15 @@ control layer or a sandbox for untrusted workflows. Do not expose an unauthentic
 Harness, ComfyUI or llama-swap directly to the Internet. Keep existing Harness
 Host/Origin checks and authentication enabled where available.
 
+Optional official H3 guides are fetched only after a native human-question answer,
+from fixed official URLs with pinned byte lengths and SHA256. No arbitrary URL,
+revision or consent flag is accepted from tool arguments. Network redirects are
+refused; unverified/partial caches are never used. The private download cache and
+consent receipt belong outside the repository. Treat downloaded guidance as
+third-party instructions, not authorization to run unrelated commands or disclose
+local data. This confirmation controls the plugin's download path, not every native
+coding capability available to an independently operated Harness.
+
 Session uploads, prompts, media snapshots, generated files, model weights,
 profile configurations and voice samples must remain outside this source tree.
 The default private cache is under `DSH_HOME/director-media` (or the user's

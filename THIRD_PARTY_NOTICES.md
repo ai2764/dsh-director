@@ -1,37 +1,33 @@
-# Third-party material
+# Third-party sources and distribution boundary
 
-## MiniMax H3 prompt documentation
+## Optional MiniMax H3 prompt documents
 
-These files retain the complete upstream content, with normalized trailing
-newlines, from `MiniMax-AI/MiniMax-H3` revision
-`a107547fa669c509b8e6363fe18378d46ab3066c`:
+The current source tree and npm package do **not** contain the official
+`ref-en.txt`, `base-en.txt`, upstream `SKILL.md`, or their license text.
+The local `skills/h3-prompt-writing/SKILL.md` is this project's original
+Ref2AV integration wrapper, not a relabeled official Skill.
 
-- `skills/h3-prompt-writing/references/ref-en.txt`
-- `skills/h3-prompt-writing/references/base-en.txt`
-- `skills/h3-prompt-writing/references/upstream-SKILL.md`
+Users may separately obtain three official guide files from
+[MiniMax-AI/MiniMax-H3 at revision a107547fa669c509b8e6363fe18378d46ab3066c](https://github.com/MiniMax-AI/MiniMax-H3/tree/a107547fa669c509b8e6363fe18378d46ab3066c/skills/h3-prompt-writing).
+The optional setup tool shows the source, revision and associated
+[upstream license text](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE)
+before asking for native human confirmation. Exact URLs, byte lengths and SHA256
+are pinned in `src/skills.mjs`. Downloaded documents and the license text are
+stored only in the user's private cache, not in this distribution.
 
-[Pinned source](https://github.com/MiniMax-AI/MiniMax-H3/tree/a107547fa669c509b8e6363fe18378d46ab3066c/skills/h3-prompt-writing).
-The pinned upstream README points to the
-[MiniMax H3 Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE),
-whose text was retrieved on 2026-10-14 and is retained in `LICENSE.minimax-h3`.
-That agreement expressly includes documentation; no separate permissive license
-for these guide files was found at the pinned revision.
+Optional downloaded material retains its upstream terms; this project's MIT
+license does not relicense it. Fetching files separately is not a license exemption
+or a determination of the user's eligibility. No model weights, custom nodes or
+workflow graphs are downloaded by this setup tool.
 
-These documents are **not MIT-licensed by this project**. The upstream agreement
-contains territorial, redistribution, use and other conditions. This local
-repository is a review candidate, not a conclusion that worldwide public
-redistribution is permitted. Resolve permission or a different distribution
-arrangement with the rights holder before public release. No inference model is
-downloaded or bundled by this plugin.
-
-The entrypoint `skills/h3-prompt-writing/SKILL.md` is a local Ref2AV-only wrapper,
-not an upstream file. No workflow graphs, inference models or model weights are
-bundled; the agent selects separately installed local capabilities.
+**History note:** the initial local review commit (0.1.28) retained official
+documents. Removing them from the current tree does not erase prior commits.
+Public Git-history preparation is a separate owner decision; no history rewrite
+or publication has occurred.
 
 ## npm dependencies
 
-Dependencies and their versions/registry origins are recorded in
-`package-lock.json`. They keep their own licenses. React is external to the web
-bundle; build output preserves esbuild's legal comments. Installations must
-retain the notices supplied with their dependencies. Harness, ComfyUI,
-llama-swap and model licenses are separate from this plugin's original MIT code.
+Dependencies and their registry origins are recorded in `package-lock.json`;
+they retain their own licenses. React is external to the browser bundle. Build
+output preserves esbuild's legal comments. Harness, ComfyUI, llama-swap and any
+models/nodes installed by the user are separate products with their own terms.

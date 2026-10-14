@@ -8,7 +8,6 @@
 !/cordis.patch.yml
 !/README.md
 !/LICENSE
-!/LICENSE.minimax-h3
 !/NOTICE
 !/THIRD_PARTY_NOTICES.md
 !/SECURITY.md
@@ -52,6 +51,7 @@ sessions/
 uploads/
 attachments/
 director-media/
+director-skills/
 staged-images/
 outputs/
 recordings/
@@ -60,6 +60,10 @@ models/
 # Workflows are discovered in the user's environment, not shipped by this plugin.
 workflows/
 src/templates/
+# Optional official guides belong only in the user's external download cache.
+/skills/h3-prompt-writing/references/ref-en.txt
+/skills/h3-prompt-writing/references/base-en.txt
+/skills/h3-prompt-writing/references/upstream-SKILL.md
 
 # No production assets, voices, recordings or model weights belong in Git.
 *.png

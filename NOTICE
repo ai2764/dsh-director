@@ -2,8 +2,7 @@ dsh-director is an unofficial integration, not an official DeepSeek or MiniMax
 plugin. It does not bundle Director Studio, model weights, ComfyUI custom nodes,
 user media or inference services.
 
-MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyright © 2026 MiniMax. All Rights Reserved.
-
-The retained upstream prompt guides are listed in THIRD_PARTY_NOTICES.md.
-The local wrapper and template changes are not official MiniMax modifications.
-See LICENSE and LICENSE.minimax-h3 for separate license scopes.
+Official MiniMax H3 prompt guides and license text are not part of this plugin
+distribution. Optional user-authorized downloads retain the upstream terms.
+The local wrapper and integration are not an official MiniMax Skill release.
+See LICENSE and THIRD_PARTY_NOTICES.md for scope and upstream source links.

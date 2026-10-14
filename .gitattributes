@@ -8,5 +8,3 @@
 *.txt text eol=lf
 LICENSE* text eol=lf
 NOTICE text eol=lf
-# Preserve the upstream license verbatim, including its original whitespace.
-LICENSE.minimax-h3 -whitespace

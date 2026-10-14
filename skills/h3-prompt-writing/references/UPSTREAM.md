@@ -1,7 +1,18 @@
-# Official source
+# Official H3 source — fetched separately
 
-The accompanying ref-en.txt, base-en.txt and upstream-SKILL.md preserve the complete official files (with normalized trailing newline) from MiniMax-AI/MiniMax-H3, revision a107547fa669c509b8e6363fe18378d46ab3066c.
+This plugin ships only its own Ref2AV wrapper and these source pointers.
+The complete official guides are not bundled.
 
-Source: https://github.com/MiniMax-AI/MiniMax-H3/tree/a107547fa669c509b8e6363fe18378d46ab3066c/skills/h3-prompt-writing
+Pinned source: https://github.com/MiniMax-AI/MiniMax-H3/tree/a107547fa669c509b8e6363fe18378d46ab3066c/skills/h3-prompt-writing
 
-The entrypoint SKILL.md is a local Ref2AV-only wrapper with Harness visual-evidence and ComfyUI wiring safeguards. It is not an official MiniMax plugin. Upstream documents remain authoritative for H3 prompt grammar.
+The optional `director_h3_skill` setup tool asks through Harness's native human
+confirmation UI before retrieving the upstream `SKILL.md`, `references/ref-en.txt`
+and `references/base-en.txt`, together with the associated pinned license text.
+The official entrypoint is retained as `references/upstream-SKILL.md`; the local
+wrapper remains the plugin's entrypoint. Exact source URLs, byte sizes and SHA256
+are recorded in `src/skills.mjs` (or installed `lib/skills.mjs`).
+
+Downloads live in the private configured skill cache. After setup, reload this
+skill so its reference base points there. A verified cache is reusable offline.
+Existing user/workspace skills are never overwritten. This is not an official
+MiniMax plugin; optional retrieved material keeps its upstream terms.

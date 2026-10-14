@@ -1,9 +1,9 @@
 License scope
 =============
 The MIT License below covers the original dsh-director implementation and local
-skill wrappers. It does NOT relicense the upstream MiniMax documents listed in
-THIRD_PARTY_NOTICES.md. Those files retain their separate terms, reproduced in
-LICENSE.minimax-h3. Dependencies retain their own licenses.
+skill wrappers. Official MiniMax documents are not included in this distribution;
+optional separately downloaded resources and dependencies retain their own
+licenses. See THIRD_PARTY_NOTICES.md for sources and boundaries.
 
 MIT License
 

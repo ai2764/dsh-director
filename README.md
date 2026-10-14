@@ -4,9 +4,10 @@ An unofficial Director plugin for DeepSeek Harness Web. Turn a rough idea into a
 reviewed shot plan, bind visual references, submit local ComfyUI jobs, and review
 images/videos inside the conversation. **No Director Studio dependency.**
 
-Local source-review candidate, version 0.1.28. Nothing is published automatically.
-Original implementation and local skill wrappers use MIT; retained MiniMax prompt
-guides have separate restricted terms. See [LICENSE](LICENSE),
+Local source-review candidate, version 0.1.29. Nothing is published automatically.
+Original implementation and local skill wrappers use MIT. Official MiniMax prompt
+guides are not included; users can obtain pinned copies separately under upstream
+terms after native human confirmation. See [LICENSE](LICENSE),
 [third-party notices](THIRD_PARTY_NOTICES.md), and the
 [release-review checklist](docs/RELEASE_REVIEW.md) before public redistribution.
 
@@ -14,8 +15,8 @@ guides have separate restricted terms. See [LICENSE](LICENSE),
 
 - **Director skill:** story beats, shots versus clips, pacing, reference casting,
   exact dialogue and continuity handoffs. Creative decisions remain with the agent.
-- **H3 prompt skill:** the complete pinned official guides plus a local Ref2AV
-  wrapper, image-inspection requirements and six-section prompt checks.
+- **Optional H3 guidance:** a local Ref2AV wrapper, image-inspection requirements
+  and six-section prompt checks; complete official guides are downloaded separately.
 - **Review UI:** distinguishable shot/reference cards, incremental reference edits,
   versioned human confirmation, inline media and enlarged previews.
 - **Managed submission:** preflight, actual reference-byte/order checks, ComfyUI
@@ -54,7 +55,7 @@ For a permitted local installation:
 ```powershell
 npm.cmd ci
 npm.cmd pack
-dsh.cmd plugin --profile web add C:/path/to/dsh-director-0.1.28.tgz
+dsh.cmd plugin --profile web add C:/path/to/dsh-director-0.1.29.tgz
 ```
 
 `prepack` builds the runtime automatically. In the Web profile's `package.json`,
@@ -83,6 +84,32 @@ shot/reference card. Confirm that displayed version or request changes. Editing 
 card requires fresh confirmation. Review each generated result before accepting
 or continuing; structural checks cannot guarantee likeness, continuity or comedy.
 
+### Optional official H3 Skill setup
+
+Loading the plugin, listing skills, reading the local wrapper and using other
+workflows never download the official H3 files. On first H3 use, the bundled
+wrapper reports missing guides and asks the agent to call `director_h3_skill`
+with `action: "install"`. Harness shows its native human-question panel with
+the fixed upstream revision, source, license link and local cache destination.
+Only selecting **Download under upstream terms** authorizes this tool's download;
+an agent-supplied boolean or ordinary generated text cannot replace that answer.
+This is not a determination of the user's legal eligibility under those terms.
+
+The plugin retrieves only three official prompt documents and the corresponding
+pinned license text, checking exact byte lengths and SHA256. It refuses redirects,
+oversized responses, partial/corrupt caches and changed upstream bytes. A changed
+pin requires a plugin update and new confirmation; there is no silent latest-version
+upgrade. Downloading does not execute scripts, install dependencies or fetch models.
+
+Reload `h3-prompt-writing` after installation: its reference-file base then points
+to the verified private cache. Subsequent use and restarts work offline with no
+repeat confirmation. Existing workspace/user skills retain their native priority
+and are never modified. If those skills already supply H3 guidance, this setup
+path need not be used. If the human-question capability is unavailable, only the
+optional setup tool is absent; the core plugin still loads and reports the limitation.
+Damaged caches fail closed; preserve/move aside the indicated dedicated cache
+before an explicitly authorized reinstall rather than overwriting user files.
+
 ## Core tools
 
 | Tool | Purpose |
@@ -93,6 +120,7 @@ or continuing; structural checks cannot guarantee likeness, continuity or comedy
 | `director_edit_review` | Update the latest card without regenerating an entire proposal |
 | `submit_comfy_job` | Validate and submit one prepared local workflow as a managed job |
 | `submit_comfy_video` | Compatibility alias of `submit_comfy_job` |
+| `director_h3_skill` | Optional guide status/download setup through native human confirmation |
 
 Supply exactly one of `workflow` (inline ComfyUI API graph) or `workflow_path`.
 Large graphs should use a file. The plugin preserves the caller's model, sampler,
@@ -124,6 +152,7 @@ Optional values on the `dsh-director` plugin entry:
 comfyBaseUrl: http://127.0.0.1:8188
 llamaSwapBaseUrl: http://127.0.0.1:11435
 mediaRoot: C:/path/to/private/director-media
+skillCacheRoot: C:/path/to/private/director-skills
 ```
 
 Service addresses must be HTTP(S) origins without embedded credentials, paths or
@@ -134,6 +163,11 @@ The default private cache is `DSH_HOME/director-media`, or the user's
 snapshots outside the package. The plugin records mappings to native Harness
 uploads; it does not relocate the upload store. No automatic cache deletion is
 implemented; removing a cache invalidates its old previews.
+
+Optional H3 documents and a version-specific consent receipt live under
+`DSH_HOME/director-skills` (or the user's `.dsh/director-skills`), configurable
+with `skillCacheRoot`. They never enter the source tree, installed plugin directory
+or npm package. Missing downloads do not block generic workflow submission.
 
 Media delivery reuses Harness Host/Origin and enabled cookie authentication.
 This is a trusted single-user integration, not multi-user session isolation.

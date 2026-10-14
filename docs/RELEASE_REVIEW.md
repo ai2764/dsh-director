@@ -12,7 +12,7 @@ part of it. Core contents:
 | --- | --- |
 | `src/` | Server tools, managed ComfyUI handoff, media and review state, Web UI |
 | `skills/director/` | Shot planning, reference casting and continuity guidance |
-| `skills/h3-prompt-writing/` | Local H3 wrapper and separately licensed upstream guides |
+| `skills/h3-prompt-writing/` | Original local H3 wrapper and upstream source pointers only |
 | `scripts/` | Build and pure profile-migration planning helper |
 | `test/` | Synthetic unit/integration fixtures, no production assets |
 
@@ -51,8 +51,11 @@ installation used by integration tests.
 
 ## Owner review before public release
 
-- Resolve MiniMax guide redistribution permission. See `THIRD_PARTY_NOTICES.md`;
-  the complete tree must not be described as unrestricted MIT source.
+- Review optional-download terms and the Git publication boundary. See `THIRD_PARTY_NOTICES.md`;
+  older local commits still retain the previously vendored guide text. Version
+  0.1.29's working tree and npm package exclude that text, but this does not erase
+  historical Git objects. Review/prepare a clean public history separately before
+  publishing; no history rewrite has been performed.
 - Confirm ownership/license authority for original implementation and wrappers.
 - Select the public author identity, repository URL and private security channel.
 - Review the staged/tracked files and the actual npm tarball, not just ignore rules.
