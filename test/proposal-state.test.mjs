@@ -325,7 +325,7 @@ test('conditional preservation of existing references is not a reference edit',a
 test('tool-call retrospection and shot/ref card updates do not request image edits',async()=>{
   const {proposalState}=await api();
   const entries=[proposal(1,'v2',[face,layout]),
-    user(2,"Your `director_edit_review remove reference_number:1` call was not an authorized reference edit; it attempted to remove Tao's identity image while trying to clear a false pending-reference state."),
+    user(2,"The earlier `director_edit_review remove reference_number:1` call was not authorized. Removing the subject's identity image was an incorrect response to the pending-reference warning."),
     user(3,'Now update the shot/ref review card to v3'),
     proposal(4,'v3',[face,layout])];
   assert.deepEqual(proposalState(entries,'v3').pending,[]);

@@ -60,6 +60,6 @@ test('media failures distinguish tool errors, broken JSON, schema, session and u
 test('media parser preserves only safe saved card identities for explicit confirmation',async()=>{
   const {parseMediaResult}=await import('../src/client/media-result.mjs');
   const parse=card_id=>parseMediaResult({...block,content:[{type:'text',text:JSON.stringify({...value,card_id})}]},'s');
-  assert.equal(parse('6de764b4-baa2-4a7e-951c-58e481d7465c').card_id,'6de764b4-baa2-4a7e-951c-58e481d7465c');
+  assert.equal(parse('00000000-0000-4000-8000-000000000001').card_id,'00000000-0000-4000-8000-000000000001');
   for(const card_id of [{bad:true},'', 'card1\nconfirm other', 'x'.repeat(129)])assert.equal(parse(card_id).card_id,undefined);
 });
