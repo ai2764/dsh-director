@@ -30,3 +30,9 @@ test('two mounted views share protection and either disposal order restores nati
     (reverse?a:b)();assert.equal(shell.submit,native);shell.submit();assert.equal(calls,2);
   }
 });
+
+test('an unavailable optional GPU service does not block a send explicitly cleared by the status owner',async()=>{
+  const protect=await guard();let calls=0;const shell={submit(){calls++;}};
+  const dispose=protect(shell,{check:async()=>({phase:'unknown',blocked:false}),onBlocked(){}});
+  shell.submit();await flush();assert.equal(calls,1);dispose();
+});

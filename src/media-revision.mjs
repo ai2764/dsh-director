@@ -1,12 +1,14 @@
 import {MediaError} from './media-store.mjs';
-import {entriesFromEvents} from './proposal-state.mjs';
-import {clipReferenceLists} from './shot-proposal.mjs';
+import {entriesFromEvents,latestProposal} from './proposal-state.mjs';
+import {clipReferenceLists,proposalSchema} from './shot-proposal.mjs';
 
 export const mediaItemSchema={type:'object',properties:Object.fromEntries(['path','label','caption','shot_id','responsibility'].map(k=>[k,{type:'string'}])),required:['path'],additionalProperties:false};
 const textFields=['content','dialogue','incoming_state','ending_state','transition'];
 export const revisionSchema={type:'object',description:'Incremental edit ONLY: omit top-level items and proposal entirely. Inspect any new uploaded image with native read_image first.',properties:{
   base_card_id:{type:'string',description:'Copy card_id from the MOST RECENT successful card result. Never copy base_card_id from an earlier call: every edit returns a different card_id. Not the proposal version.'},version:{type:'string',minLength:1,maxLength:80,description:'Optional display label. Omit to allocate a fresh version; reused labels are replaced automatically. Use the version actually returned for confirmation.'},
   reference_changes:{type:'array',maxItems:12,description:'Update existing reference responsibilities using BASE card numbers; e.g. [{reference_number:1,responsibility:"Actor identity only"}] when a new costume takes over clothing. Cannot target the image being replaced/removed. Text uses the resulting Picture numbering.',items:{type:'object',properties:{reference_number:{type:'integer',minimum:1,maximum:12},responsibility:{type:'string',minLength:1,maxLength:2000}},required:['reference_number','responsibility'],additionalProperties:false}},
+  clip_dimensions:{...proposalSchema.properties.clip_dimensions,description:'Replace the complete planned output size list, one width × height entry for every existing clip. Omit to preserve dimensions; this edit creates a new card requiring fresh confirmation.'},
+  clip_workflows:{...proposalSchema.properties.clip_workflows,description:'Replace the complete inspected workflow path and continuity route/source list for every existing clip. Omit to preserve it; this edit creates a new card requiring fresh confirmation.'},
   change:{type:'object',description:'ADD: {"op":"add","item":{"path":"...","responsibility":"Costume"},"shot_ids":["S1"]}. REPLACE: {"op":"replace","reference_number":3,"item":{"path":"..."}}. REMOVE: {"op":"remove","reference_number":3}.',properties:{op:{type:'string',enum:['add','replace','remove']},reference_number:{type:'integer',minimum:1,maximum:12,description:'Required for replace/remove only; omit for add (it appends automatically).'},item:{...mediaItemSchema,description:'Required for add AND replace. Put the new image path here, not in top-level items.'},shot_ids:{type:'array',items:{type:'string'},minItems:1,description:'Required for add only: existing shot IDs to bind the appended image.'}},required:['op'],additionalProperties:false},
   shot_changes:{type:'array',maxItems:40,items:{type:'object',properties:{shot_id:{type:'string'},duration_seconds:{type:'number'},...Object.fromEntries(textFields.map(k=>[k,{type:'string'}]))},required:['shot_id'],additionalProperties:false}}
 },required:['base_card_id'],additionalProperties:false};
@@ -17,7 +19,7 @@ export async function prepareRevision(args,{session,store,signal}){
   if(args.items!==undefined||args.proposal!==undefined)throw new MediaError('Use either revision or full items/proposal; do not mix them.');
   const r=args.revision;
   const cards=entriesFromEvents(session.snapshotEvents?.()??[]).filter(e=>e.kind==='proposal');
-  const base=cards.at(-1)?.value;
+  const base=latestProposal(cards)?.value;
   if(!r?.base_card_id||!base?.card_id||r.base_card_id!==base.card_id)throw new MediaError(`Stale or unavailable base card. Use the latest card_id${base?.card_id?': '+base.card_id: ' or present a full proposal first'}.`,409);
   if(r.version!==undefined&&(typeof r.version!=='string'||!r.version.trim()||r.version.length>80))throw new MediaError('Proposal version must be a nonempty string of at most 80 characters, or omitted.');
   // Labels are bookkeeping, not creative choices. Avoid another model round
@@ -30,6 +32,8 @@ export async function prepareRevision(args,{session,store,signal}){
     version='v'+n;
   }
   const proposal=structuredClone(base.proposal);proposal.version=version;
+  if(r.clip_dimensions!==undefined)proposal.clip_dimensions=r.clip_dimensions;
+  if(r.clip_workflows!==undefined)proposal.clip_workflows=r.clip_workflows;
   const clipRefs=new Map(clipReferenceLists(base.proposal,base.items.length,base.items).map(c=>[c.clip_id,c.reference_numbers]));
   const changes=r.shot_changes??[];
   if(!Array.isArray(changes)||changes.length>40)throw new MediaError('Invalid shot_changes.');
@@ -49,7 +53,7 @@ export async function prepareRevision(args,{session,store,signal}){
     patchedResponsibilities.add(entry.original.id);
     entry.original={...entry.original,responsibility:patch.responsibility};
   }
-  if(!op&&!changes.length&&!referenceChanges.length)throw new MediaError('Provide change, shot_changes or reference_changes.');
+  if(!op&&!changes.length&&!referenceChanges.length&&r.clip_dimensions===undefined&&r.clip_workflows===undefined)throw new MediaError('Provide change, shot_changes, reference_changes, clip_dimensions or clip_workflows.');
   if(op){
     if(!['add','replace','remove'].includes(op.op))throw new MediaError('Unknown reference change operation.');
     if(op.op==='add'){
@@ -113,7 +117,7 @@ export async function prepareRevision(args,{session,store,signal}){
   const expectedHashes=new Map(),resolved=[];
   for(const [i,entry] of items.entries()){
     if(entry.item){resolved.push(entry.item);continue;}
-    const old=entry.original,record=await store.openVerified(old.id,session.id,signal);
+    const old=entry.original,record=await store.openOriginal(old.id,session.id,signal);
     try{
       if(record.sha256!==old.sha256)throw new MediaError('Stored reference changed.',409);
       resolved.push({path:record.source,...Object.fromEntries(['label','caption','shot_id','responsibility'].filter(k=>typeof old[k]==='string').map(k=>[k,old[k]]))});

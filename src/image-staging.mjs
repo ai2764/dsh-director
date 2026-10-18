@@ -22,7 +22,7 @@ async function boundedBody(response,maxBytes){
 export async function localImage(path,{cwd,fs,session,signal,maxBytes,knownUpload=false}){
   signal?.throwIfAborted();
   if(typeof path!=='string'||!path.trim()||/^[a-z]+:\/\//i.test(path))fail('source_paths must contain existing local image files, not URLs.');
-  const source_path=resolve(cwd,path),target=await fs.resolve(path,{cwd,signal}),parent=await fs.resolve(cwd,{signal});
+  const source_path=resolve(cwd,path),target=await fs.resolve(path,{cwd,signal}),parent=await fs.resolve(cwd,{cwd,signal});
   if((await fs.stat(target,signal))?.type!=='file')fail(`source file unavailable: ${source_path}`);
   const host=fs.processPath(target);
   if(fs.processPathFromHostPath?.(host)!==host)fail('filesystem is not mapped to this host; make the file available through the authorized Harness filesystem first.');

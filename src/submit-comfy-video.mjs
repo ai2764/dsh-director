@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {createHash} from 'node:crypto'
 import { H3_REVIEW_SCHEMA, validateH3Preflight } from './h3-preflight.mjs'
-import {entriesFromEvents,assertProposalSubmission} from './proposal-state.mjs'
+import {entriesFromEvents,latestProposal,assertProposalSubmission} from './proposal-state.mjs'
+import {inspectComfyGraph} from './workflow-discovery.mjs'
+import {validateLiveWorkflow} from './workflow-live-preflight.mjs'
 
 const COMFY_PROMPT_URL = 'http://127.0.0.1:8188/prompt'
 const LLAMA_SWAP_BASE_URL = 'http://127.0.0.1:11435'
@@ -101,7 +104,8 @@ function h3Generation(graph) {
 function h3CanvasLines(value) {
   const settings = value.h3_generation
   if (!settings) return []
-  return [`H3 workflow canvas: ${JSON.stringify(settings.width) ?? 'unresolved'} × ${JSON.stringify(settings.height) ?? 'unresolved'} (${settings.orientation}), length ${JSON.stringify(settings.length) ?? 'unresolved'}. These are graph settings; verify decoded video dimensions after completion.`]
+  const timing=value.h3_generation_timing
+  return [`H3 workflow canvas: ${JSON.stringify(settings.width) ?? 'unresolved'} × ${JSON.stringify(settings.height) ?? 'unresolved'} (${settings.orientation}), length ${JSON.stringify(settings.length) ?? 'unresolved'}${timing?`; estimated delivered duration ${(timing.delivered_frames/timing.fps).toFixed(3)} seconds after ${timing.pinned_frames} context frames are trimmed`:''}. These are graph settings; verify decoded video dimensions and duration after completion.`]
 }
 
 async function loadWorkflow(args, options) {
@@ -147,13 +151,39 @@ async function applyH3Prompt(payload, args, readFileImpl) {
 
 function validateConnectionIndices(graph) {
   const errors=[]
+  // These stable core sockets catch broken H3 video/audio chains before a
+  // costly ComfyUI /prompt attempt. Unknown custom sockets remain ComfyUI's
+  // responsibility; do not guess their installed interface.
+  const outputTypes={
+    VAELoader:['VAE'],MiniMaxH3ReferenceToVideo:['CONDITIONING','LATENT'],
+    SamplerCustomAdvanced:['LATENT','LATENT'],VAEDecode:['IMAGE'],
+    VAEDecodeAudio:['AUDIO'],CreateVideo:['VIDEO'],
+  }
+  const inputTypes={
+    MiniMaxH3ReferenceToVideo:{vae:'VAE',audio_vae:'VAE'},
+    SamplerCustomAdvanced:{latent_image:'LATENT'},
+    VAEDecode:{samples:'LATENT',vae:'VAE'},
+    VAEDecodeAudio:{samples:'LATENT',vae:'VAE'},
+    CreateVideo:{images:'IMAGE',audio:'AUDIO'},
+    SaveVideo:{video:'VIDEO'},
+  }
   for (const [nodeId, node] of Object.entries(graph)) for (const [inputName, binding] of Object.entries(node?.inputs ?? {})) {
-    if (!Array.isArray(binding) || binding.length !== 2 || !Object.hasOwn(graph, String(binding[0]))) continue
-    if (Number.isInteger(binding[1]) && binding[1] >= 0) continue
+    if (!Array.isArray(binding) || binding.length !== 2) continue
+    const sourceId=String(binding[0]);
+    if(!Object.hasOwn(graph,sourceId)){
+      if(/^\d+$/.test(sourceId)&&Number.isInteger(Number(binding[1])))errors.push(`node ${nodeId} input ${inputName} links to missing node ${sourceId}; restore the node or change the link to an existing output`)
+      continue
+    }
+    if (Number.isInteger(binding[1]) && binding[1] >= 0) {
+      const source=graph[sourceId],outputs=outputTypes[source.class_type],actual=outputs?.[binding[1]],expected=inputTypes[node.class_type]?.[inputName];
+      if(outputs&&binding[1]>=outputs.length)errors.push(`node ${nodeId} input ${inputName} links to ${source.class_type} node ${sourceId} output ${binding[1]}, but that node has only ${outputs.length} output(s); inspect its installed schema`)
+      else if(actual&&expected&&actual!==expected)errors.push(`node ${nodeId} input ${inputName} expects ${expected}, but ${source.class_type} node ${sourceId} output ${binding[1]} is ${actual}; connect a compatible socket`)
+      continue
+    }
     const index=Number.isInteger(Number(binding[1]))&&Number(binding[1])>=0?Number(binding[1]):0
     errors.push(`node ${nodeId} input ${inputName} has ${JSON.stringify(binding)}; use [${JSON.stringify(String(binding[0]))}, ${index}]`)
   }
-  if(errors.length)throw new Error(`submit_comfy_job: ${errors.length} invalid ComfyUI connection index(es); output indices must be numeric non-negative integers, not strings. PowerShell JSON rewrites can turn 0 into "0".\n${errors.slice(0,12).join('\n')}${errors.length>12?`\n...and ${errors.length-12} more`:''}`)
+  if(errors.length)throw new Error(`submit_comfy_job: ${errors.length} invalid ComfyUI connection(s); node IDs must exist, output indices must be numeric non-negative integers and within the source's outputs, and known socket types must match. PowerShell JSON rewrites can turn 0 into "0".\n${errors.slice(0,12).join('\n')}${errors.length>12?`\n...and ${errors.length-12} more`:''}`)
 }
 
 function validateH3Ref2AVGraph(graph) {
@@ -384,7 +414,7 @@ async function monitorComfyPrompt(promptId, options) {
       const detail = failed ? comfyFailureDetail(entry) : files.length > 0 ? `${files.length} output file(s)` : 'completed without reported output files'
       const output = {prompt_id: promptId, execution_status: failed ? 'failed' : 'completed', execution_detail: detail,
         output_files: files, output_artifacts: artifacts,
-        review_instruction: 'Download the exact recorded output_artifacts view_url files into this session workspace. Inspect the actual result for visual QC, then call director_show_media with the local file paths to show images/videos in the conversation. Display does not establish acceptance. Do not generate extra clips automatically.'}
+        review_instruction: 'Download the exact recorded output_artifacts view_url files into this session workspace. Verify the files and required saved latent slots, then call director_show_media with the local file paths to show images, videos or audio in the conversation. Visual and creative review belongs to the user unless explicitly requested; continue an already-authorized chain after technical checks. Do not create unrequested rerenders. Display does not establish acceptance.'}
       const pending = release => publish({...output, phase: 'waiting_for_vram', comfy_release: release,
         handoff_instruction: 'ComfyUI execution has ended. Waiting for verified GPU handoff; do not resubmit or regenerate this prompt. Read saved output_artifacts without waiting for the job to finish, or cancel only this monitor. A new user message can still load the LLM.'})
       // Publish artifacts before cleanup, but do not settle the registry job: any
@@ -415,11 +445,16 @@ function startComfyMonitor(startJob, promptId, owner, options) {
     label: `ComfyUI prompt ${promptId}`,
     owner,
     outputLimitBytes: 16_384,
-    run() {
+    run(job) {
       const controller = new AbortController()
       let cancelled = false
       let current, unread = '', terminal = false
-      const publish = value => {current = value; unread = JSON.stringify(value);options.onGpuState?.(value)}
+      const publish = value => {
+        current = value
+        unread = JSON.stringify(value)
+        job?.append?.(unread + '\n')
+        options.onGpuState?.(value)
+      }
       const done = monitorComfyPrompt(promptId, {
         ...options,
         signal: controller.signal,
@@ -488,26 +523,70 @@ export function createSubmitComfyVideo({
     const origin = origins.get(url.origin)
     return suppliedFetch(origin ? origin + url.pathname + url.search : input, { ...init, redirect: 'error' })
   }
-  return async function submitComfyVideo(args, exec) {
-    const loaded = await loadWorkflow(args, {
+  return async function submitComfyVideo(args, exec, preparedWorkflow) {
+    const loaded = preparedWorkflow ?? await loadWorkflow(args, {
       readFileImpl,
     })
     const payload = await applyH3Prompt(loaded, args, readFileImpl)
     validateConnectionIndices(payload.prompt)
+    const inspection=inspectComfyGraph(payload.prompt)
     const generation = h3Generation(payload.prompt)
+    const generationForReview=generation&&inspection.generation_timing?{...generation,timing:inspection.generation_timing}:generation
+    const continuity=inspection.continuity
+    const dependentH3=!!generation&&['video_frames','sampler_latent','unverified_latent'].includes(continuity.mode)
+    const workflowForReview={path:typeof args.workflow_path==='string'?resolve(process.cwd(),args.workflow_path.trim()):undefined,continuity}
+    const continuityError=dependentH3&&!args.continuity_requirement
+      ? `Set continuity_requirement=${continuity.mode} for this dependent H3 workflow after inspecting its actual route and source before submission.`
+      : continuity.mode==='unverified_latent'
+      ? `Latent continuation is unverified: ${continuity.explanation} Inspect installed node schemas and source provenance before queueing.`
+      : args.continuity_requirement && continuity.mode!==args.continuity_requirement
+      ? `Continuity requirement ${args.continuity_requirement} is not met: graph uses ${continuity.mode}. ${continuity.explanation} Inspect the selected workflow and its installed node schema before queueing.`
+      : continuity.wiring_verified===false
+      ? `H3 MotionContext wiring is unverified: ${continuity.wiring_issues.join(' ')} Repair the conditioning, sampler and trim/output connections before queueing.`
+      : undefined
+    if(continuityError){
+      if(args.validate_only===true)return {validated:true,submission_ready:false,submission_blockers:[continuityError],continuity,terminal:false,...(generation?{h3_generation:generation}:{}),...(inspection.generation_timing?{h3_generation_timing:inspection.generation_timing}:{})}
+      throw new Error(`submit_comfy_job: ${continuityError}`)
+    }
+    const workflow_preflight=await validateLiveWorkflow(payload.prompt,{fetchImpl,comfyBaseUrl,signal:exec.signal,partialExecutionTargets:payload.partial_execution_targets})
+    if(workflow_preflight.issues.length){
+      if(args.validate_only===true)return {validated:true,submission_ready:false,submission_blockers:workflow_preflight.issues,workflow_preflight,continuity,terminal:false}
+      throw new Error(`submit_comfy_job: ${workflow_preflight.issues.join('\n')}`)
+    }
     let preflight
+    let reviewBinding
+    let effectivePrompt
     if (args.intent === 'h3_ref2av' || Object.values(payload.prompt).some(node => node?.class_type === 'MiniMaxH3ReferenceToVideo')) {
       validateH3Ref2AVGraph(payload.prompt)
+      const prompt=onlyNode(payload.prompt,'MiniMaxH3ReferenceToVideo').inputs.prompt
+      effectivePrompt={source:args.h3_prompt!==undefined||args.h3_prompt_path!==undefined?'override':'workflow',sha256:createHash('sha256').update(prompt).digest('hex'),summary:/^summary:\s*([\s\S]*?)(?=^retention_analysis:)/m.exec(prompt)?.[1].trim()??''}
       const entries=entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[])
-      if(args.validate_only!==true)assertProposalSubmission(entries)
+      const selection=args.card_id!==undefined||args.clip_id!==undefined?{card_id:args.card_id,clip_id:args.clip_id}:undefined
+      if(args.validate_only!==true)reviewBinding=assertProposalSubmission(entries,undefined,generationForReview,workflowForReview,selection)
       preflight = await validateH3Preflight(payload.prompt, args.h3_review, exec, { readFileImpl, fetchImpl })
-      if(args.validate_only!==true)assertProposalSubmission(entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[]),preflight.references)
+      if(args.validate_only!==true)reviewBinding=assertProposalSubmission(entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[]),preflight.references,generationForReview,workflowForReview,selection?{...selection,dialogue:preflight.dialogue}:undefined)
+    }
+    const submission_blockers=[];
+    if(continuity.mode==='sampler_latent'){
+      const loader=Object.values(payload.prompt).find(node=>node?.class_type==='MiniMaxH3MotionContextLoadLatent'&&Number(node.inputs?.clip_index)>0);
+      if(loader){
+        const source={latent_path:String(loader.inputs.latent_path??''),clip_index:Number(loader.inputs.clip_index)};
+        try{
+          const checked=await fetchImpl(`${comfyBaseUrl}/h3_motion_context/slot_exists`,{method:'POST',headers:{'content-type':'application/json',origin:comfyBaseUrl},body:JSON.stringify(source),signal:exec.signal});
+          if(!checked.ok)throw new Error(`HTTP ${checked.status}`);
+          const status=await checked.json();
+          if(status?.exists!==true)submission_blockers.push(`Saved sampler latent is not available yet: ${source.latent_path} (clip ${source.clip_index}). Complete the prior clip and verify the saved slot; LoadLatent.latent_path must name its output directory or an exact .safetensors file, not SaveLatent.filename_prefix.`);
+        }catch(error){submission_blockers.push(`Cannot verify saved sampler latent ${source.latent_path} (clip ${source.clip_index}): ${error.message}. Check the installed Motion Context slot_exists route and source before queueing.`)}
+      }
     }
     if (args.validate_only === true) {
-      const submission_blockers=[];
-      if(preflight)try{assertProposalSubmission(entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[]),preflight.references)}catch(error){submission_blockers.push(error.message)}
-      return { validated: true, submission_ready:submission_blockers.length===0, submission_blockers, terminal: false, ...(generation ? { h3_generation: generation } : {}), ...(preflight ? { h3_preflight: preflight } : {}) }
+      if(preflight)try{reviewBinding=assertProposalSubmission(entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[]),preflight.references,generationForReview,workflowForReview,args.card_id!==undefined||args.clip_id!==undefined?{card_id:args.card_id,clip_id:args.clip_id,dialogue:preflight.dialogue}:undefined)}catch(error){submission_blockers.push(error.message)}
+      return { validated: true, submission_ready:submission_blockers.length===0, submission_blockers, workflow_preflight, continuity, terminal: false, ...(reviewBinding?{review_binding:reviewBinding}:{}), ...(generation ? { h3_generation: generation } : {}), ...(inspection.generation_timing?{h3_generation_timing:inspection.generation_timing}:{}), ...(preflight ? { h3_preflight: preflight } : {}),...(effectivePrompt?{h3_effective_prompt:effectivePrompt}:{}) }
     }
+    if(submission_blockers.length)throw new Error(`submit_comfy_job: ${submission_blockers.join(' ')}`)
+    // Async reference/latent checks may overlap a user edit. Read approval again
+    // at the queue boundary, with no awaited work between this check and POST.
+    if(preflight)reviewBinding=assertProposalSubmission(entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[]),preflight.references,generationForReview,workflowForReview,args.card_id!==undefined||args.clip_id!==undefined?{card_id:args.card_id,clip_id:args.clip_id,dialogue:preflight.dialogue}:undefined)
     const response = await fetchImpl(COMFY_PROMPT_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -568,8 +647,51 @@ export function createSubmitComfyVideo({
       running_models: unload.runningModels,
       ...((warning ?? jobWarning) !== undefined ? { warning: [jobWarning, warning].filter(Boolean).join(' ') } : {}),
       terminal: true,
+      continuity,
+      ...(reviewBinding?{review_binding:reviewBinding}:{}),
+      ...(effectivePrompt?{h3_effective_prompt:effectivePrompt}:{}),
       ...(generation ? { h3_generation: generation } : {}),
+      ...(inspection.generation_timing?{h3_generation_timing:inspection.generation_timing}:{}),
       ...(preflight ? { h3_preflight: preflight } : {}),
+    }
+  }
+}
+
+function submissionIssue(message) {
+  const code=/^Director review:/i.test(message)?'REVIEW_REQUIRED':/^ComfyUI rejected workflow/i.test(message)?'COMFY_REJECTED':/^H3 preflight:/i.test(message)?'H3_PREFLIGHT':/continuity|saved sampler latent|latent continuation/i.test(message)?'CONTINUITY_REQUIRED':'WORKFLOW_INVALID'
+  return {code,message,action:code==='REVIEW_REQUIRED'?'Inspect the current card and its approval; use director_show_media with card_id to redisplay without revising it. Confirm that card or repair the requested change before retrying.':code==='COMFY_REJECTED'?'Repair the named node/input using its installed schema, then validate the changed graph.':'Repair the listed input or evidence, then validate again. Do not repeat unchanged arguments.'}
+}
+
+function blockedSubmission(messages, extra={}) {
+  const issues=messages.map(submissionIssue)
+  return {...extra,status:'blocked',validated:false,submission_ready:false,submission_blockers:messages,issues,retry_identical:false,terminal:false}
+}
+
+// Public tool boundary: planning uses workflow inspection, production binds an
+// approved card and clip before asking the agent for a complete final prompt.
+// The executor remains reusable for lower-level graph/preflight checks.
+function managedSubmissionExecutor(options) {
+  const submit=createSubmitComfyVideo(options)
+  return async(args,exec)=>{
+    try{
+      const loaded=await loadWorkflow(args,{readFileImpl:options.readFileImpl??readFile})
+      const isH3=args.intent==='h3_ref2av'||Object.values(loaded.prompt).some(node=>node?.class_type==='MiniMaxH3ReferenceToVideo')
+      if(isH3){
+        const entries=entriesFromEvents(exec.agent?.session?.snapshotEvents?.()??[])
+        const latest=latestProposal(entries)
+        if(!latest)throw Error('Director review: no shot/reference proposal is available. Use director_workflows inspect for capability and timing planning, then display the actual references and shot card and obtain confirmation before writing the final H3 prompt. Standalone workflow debugging remains available through native coding tools.')
+        if(typeof args.card_id!=='string'||!args.card_id||typeof args.clip_id!=='string'||!args.clip_id)throw Error(`Director review: provide card_id ${latest.value.card_id} and one clip_id from that card. Reuse the existing card; do not create another proposal to repair missing submit arguments.`)
+        assertProposalSubmission(entries,undefined,undefined,undefined,{card_id:args.card_id,clip_id:args.clip_id})
+      }
+      const value=await submit(args,exec,loaded)
+      if(value.submission_ready===false)return blockedSubmission(value.submission_blockers,value)
+      return value
+    }catch(error){
+      const message=errorText(error)
+      // These errors happen before a job is accepted. A transport failure or
+      // unknown post-acceptance outcome must still surface as an execution error.
+      if(/^(?:Director review:|H3 preflight:|submit_comfy_(?:video|job):|ComfyUI rejected workflow)/i.test(message))return blockedSubmission([message])
+      throw error
     }
   }
 }
@@ -582,25 +704,32 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       isLegacyVideoName
         ? 'Compatibility name for submit_comfy_job; submit exactly one prepared ComfyUI workflow as a managed background job.'
         : 'Submit exactly one prepared ComfyUI API workflow for image, video, preprocessing, or another ComfyUI task as a managed background job.',
-      'Use this instead of manually posting to /prompt or polling /history. It monitors completion, unloads llama-swap, and ends the current turn.',
+      'Managed Director productions use this for completion monitoring, llama-swap handoff and turn conclusion. Standalone workflow debugging and ordinary coding retain native Harness tools.',
+      'Planning comes first: use director_workflows inspect for capability, dimensions and timing; show a shot/ref card and wait for user confirmation before writing its final H3 prompt. H3 validation/submission requires card_id and clip_id from that approved card. Do not manufacture a final prompt just to plan or obtain approval.',
       'Reuse a previously verified workflow for the same task unless the user requests a change or its capabilities no longer fit. Check only relevant installed nodes/models when needed; do not print full object_info responses or perform recursive filesystem model searches when a targeted query answers the check.',
       `For fresh-H3 timing-only planning, run node ${H3_TIMING_SHELL_PATH} --shots 5.5,3 (repeat --shots per clip). This offline helper computes 24-fps shot boundaries and 17k+5 clip lengths; no workflow/creative-guide lookup is needed for that calculation. Review its actual durations before approval. It does not rewrite workflows or handle latent-context overlap.`,
+      'H3 graph length is pretrim: MotionContextTrim removes pinned context frames after H3 frame alignment. Use director_workflows generation_timing and validate_only h3_generation_timing.delivered_frames to compare the actual final duration with the approved card; never copy the desired delivered frame count into the raw length input.',
       'Stage selected local references with director_stage_images; reuse its returned image bindings and original source_path. Do not implement multipart uploads or enumerate the full LoadImage library in model-visible shell output.',
       'No workflow is bundled. Select or adapt a local ComfyUI API graph through native coding tools. For continuity use director continuity guidance and a capable workflow_path. Set the actual graph canvas for portrait; inspect h3_generation and decoded output dimensions.',
       'For H3 load h3-prompt-writing and its official guides, inspect all actual references with read_image, and provide h3_review with their observed responsibilities and exact dialogue. The latest shot/ref proposal needs human confirmation. Use director_assets to recover source paths after compaction.',
       'Raw H3 graphs receive the same preflight even with intent=generic. Use intent=generic for other workflows.',
       'For an existing H3 graph use workflow_path plus h3_prompt_path or h3_prompt to replace only its six-section prompt. Flat ref_images.ref_image_0...N sockets bind staged Pictures; see h3-prompt-writing.',
+      'When diagnosing an H3 job, compare h3_effective_prompt or ComfyUI history for the prompt ID. An h3_prompt override changes the submitted copy, never the source workflow file.',
       'A failed background job is terminal for that submission. Never retry an identical failed workflow automatically; inspect the error and change the workflow before submitting again.',
       'After completion, use job output_artifacts and its ComfyUI view_url to retrieve outputs for review. For a loopback view_url, download it to the workspace with a shell HTTP client such as PowerShell Invoke-WebRequest or curl, then inspect that exact file; never use web_fetch for localhost and do not search entire drives.',
       'This tool concludes the turn after an accepted submission.',
       'Monitoring waits for verified GPU release before waking the Agent. waiting_for_vram means handoff, not new generation: inspect job_output, never resubmit a completed/failed prompt.',
-      'Use validate_only=true before submission. Check submission_ready and submission_blockers as well as graph checks; validation never queues, unloads or ends the turn.',
+      'Use validate_only=true before submission. Check submission_ready and issues/submission_blockers; validation never queues, unloads or ends the turn. status=blocked is an actionable prerequisite, not a failed generation. retry_identical=false means repair its cause or wait for confirmation; never retry the same arguments or re-create an unchanged card to clear it.',
+      'For dependent H3 clips prefer compatible saved sampler latent Motion Context. A previous clip video can also supply consecutive context_frames (video_frames), plus context_audio when supported; this multi-frame motion history is different from extracting one tail frame as a Picture or guide. Set continuity_requirement to the inspected route (sampler_latent or video_frames) on validation and submission; never label video_frames as original sampler latent. Honor an explicit saved-latent requirement and report missing latent before proposing a rerender. Verify source, conditioning-to-sampler wiring, trim and output; a MotionContext node alone is not proof of continuation. Put the actual workflow path, route and source on the review card before approval. Independent I2V/FLF workflows remain available.',
       'Provide exactly one of workflow_path or workflow. Raw node graphs and {prompt: ...} wrappers are accepted.',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
+        card_id: {type:'string',description:'Required for managed H3 validation and generation: exact card_id of the current approved shot/reference proposal. Redisplay it with director_show_media card_id instead of rebuilding it.'},
+        clip_id: {type:'string',description:'Required with card_id: the specific approved clip to generate. Its references, dimensions, duration, dialogue and continuity are checked together.'},
         validate_only: { type: 'boolean', description: 'Check only; do not queue or unload. Defaults to false.' },
+        continuity_requirement: {type:'string',enum:['sampler_latent','video_frames'],description:'Required for dependent H3 continuation. Match the inspected route: sampler_latent for saved sampler output (preferred when available), video_frames for consecutive frames from the previous clip through MotionContext.context_frames. A single tail-frame Picture is not a supported continuation method.'},
         h3_review: H3_REVIEW_SCHEMA,
         h3_prompt: {
           type: 'object', description: 'Optional six-section prompt for an existing H3 workflow; only its H3 prompt input changes. Mutually exclusive with h3_prompt_path.',
@@ -627,10 +756,21 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
     output: {
       schema: { type: 'object' },
       render(_args, value) {
-        if (value.validated) return [{ type: 'text', text: ['ComfyUI graph/reference checks passed. Nothing queued; LLM and turn unchanged.',value.submission_ready?'Submission checks currently clear.':'Submission blocked: '+value.submission_blockers.join('; '), ...h3CanvasLines(value)].join('\n') }]
+        if(value.status==='blocked')return [{type:'text',text:['Submission blocked. No job queued; LLM and turn unchanged.',...value.issues.map(issue=>`${issue.code}: ${issue.message}\nNext: ${issue.action}`),'Do not retry identical arguments.'].join('\n')}]
+        if (value.validated) return [{ type: 'text', text: [
+          'Partial ComfyUI preflight completed. Nothing queued; LLM and turn unchanged.',
+          `Continuity route: ${value.continuity.mode}. ${value.continuity.explanation}`,
+          ...(value.h3_effective_prompt?[`Effective H3 prompt (${value.h3_effective_prompt.source}, SHA256 ${value.h3_effective_prompt.sha256}): ${value.h3_effective_prompt.summary}`]:[]),
+          value.submission_ready?(value.workflow_preflight?.complete===false?'No verified blocker; workflow interface/file checks are incomplete. Inspect the warnings before submission.':'Implemented submission checks currently clear; this is not a full ComfyUI runtime validation.'):'Submission blocked: '+value.submission_blockers.join('; '),
+          ...(value.workflow_preflight?.warnings??[]).slice(0,8).map(warning=>`Preflight warning: ${warning}`),
+          ...(value.workflow_preflight?.limitations??[]).map(limit=>`Scope: ${limit}`),
+          ...h3CanvasLines(value),
+        ].join('\n') }]
         const lines = [
           `ComfyUI queued prompt ${value.prompt_id}.`,
           ...h3CanvasLines(value),
+          `Continuity route: ${value.continuity.mode}. ${value.continuity.explanation}`,
+          ...(value.h3_effective_prompt?[`Effective H3 prompt (${value.h3_effective_prompt.source}, SHA256 ${value.h3_effective_prompt.sha256}): ${value.h3_effective_prompt.summary}`]:[]),
           ...(value.job_id ? [`Harness background job: ${value.job_id}. Completion will wake this Agent for review only after verified GPU handoff; unverified release keeps the job waiting with saved outputs readable via job_output.`] : []),
           value.llm_unloaded
             ? 'llama-swap model unloaded; Harness turn concluded.'
@@ -644,12 +784,25 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       },
     },
     timeoutMs: 30_000,
-    execute: createSubmitComfyVideo({ startJob, ...options }),
+    execute: managedSubmissionExecutor({ startJob, ...options }),
   }
 }
 
+export function startManagedJob(jobs, spec) {
+    if (typeof jobs.events?.subscribe !== 'function') return jobs.start(spec)
+    const {owner, run, ...rest} = spec
+    return jobs.start({
+      ...rest,
+      ...(owner ? {owner: typeof owner === 'string' ? owner : owner.id} : {}),
+      run(job) {
+        const hooks = run(job)
+        return {...hooks, done: hooks.done.then(outcome => ({...outcome, result: outcome.output}))}
+      },
+    })
+}
+
 export function apply(ctx, options = {}) {
-  const startJob = (spec) => ctx.jobs.start(spec)
+  const startJob = (spec) => startManagedJob(ctx.jobs, spec)
   ctx.effect(
     () => ctx.tools.register(toolDefinition({ startJob, toolName: 'submit_comfy_job', ...options })),
     'submit-comfy-video: generic terminal submit tool',

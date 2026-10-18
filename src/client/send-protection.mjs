@@ -13,7 +13,7 @@ export function protectSend(shell,owner){
       void (async()=>{
         try{
           const status=await current.check();if(!entry.owners.has(current))return;
-          if(status?.blocked===false&&status.phase==='ready')entry.native.apply(shell,args);
+          if(status?.blocked===false&&['ready','unknown'].includes(status.phase))entry.native.apply(shell,args);
           else for(const listener of entry.owners)listener.onBlocked(status);
         }catch{for(const listener of entry.owners)listener.onBlocked({phase:'unknown',blocked:true,llm:'unknown'});}
         finally{entry.checking=false;}

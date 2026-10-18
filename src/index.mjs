@@ -7,8 +7,9 @@ import {createMediaStore} from './media-store.mjs';
 import {createMediaTool,createEditReviewTool} from './media-tool.mjs';
 import {registerMediaRoute} from './media-route.mjs';
 import {createStageImagesTool} from './image-staging.mjs';
-import {createGpuStatus,registerGpuStatusRoute} from './gpu-status.mjs';
+import {createGpuStatus,registerGpuStatusRoute,registerGpuReleaseRoute} from './gpu-status.mjs';
 import {createAssetTool} from './asset-catalog.mjs';
+import {createWorkflowTool} from './workflow-discovery.mjs';
 
 export const name='dsh-director';
 export const inject=['tools','jobs','skills','fs','connection','webServer','attachments'];
@@ -34,9 +35,11 @@ export async function apply(ctx,config={}){
   const gpuStatus=createGpuStatus(config);
   registerSubmit(ctx,{...config,onGpuState:value=>gpuStatus.update(value)});
   ctx.effect(()=>registerGpuStatusRoute(ctx,gpuStatus),'director GPU status');
+  ctx.effect(()=>registerGpuReleaseRoute(ctx,gpuStatus),'director GPU release');
   const store=createMediaStore({root:config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media')});
   ctx.effect(()=>ctx.tools.register(createAssetTool({root:join(config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media'),'assets'),fs:ctx.fs,attachments:ctx.attachments})),'director asset lookup');
   ctx.effect(()=>ctx.tools.register(createStageImagesTool({root:join(config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media'),'staged-images'),fs:ctx.fs,comfyBaseUrl:config.comfyBaseUrl})),'director reference staging');
+  ctx.effect(()=>ctx.tools.register(createWorkflowTool({comfyBaseUrl:config.comfyBaseUrl})),'director workflow discovery');
   const mediaTool=createMediaTool({store,fs:ctx.fs,attachments:ctx.attachments});
   ctx.effect(()=>ctx.tools.register(mediaTool),'director media tool');
   ctx.effect(()=>ctx.tools.register(createEditReviewTool(mediaTool)),'director review edits');

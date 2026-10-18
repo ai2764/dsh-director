@@ -1,0 +1,49 @@
+{
+  "call": {
+    "seq": 1,
+    "type": "tool/call",
+    "data": {
+      "callId": "fixture-review-call",
+      "name": "director_show_media"
+    }
+  },
+  "result": {
+    "seq": 2,
+    "type": "tool/result",
+    "data": {
+      "message": {
+        "role": "tool",
+        "source": {
+          "kind": "tool",
+          "callId": "fixture-review-call"
+        },
+        "toolCallId": "fixture-review-call",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"kind\":\"director-media\",\"version\":1,\"card_id\":\"fixture-card\",\"session_id\":\"fixture-session\",\"title\":\"Synthetic review envelope\",\"items\":[{\"type\":\"image\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"proposal\":{\"version\":\"v3\",\"shots\":[{\"shot_id\":\"s1\",\"clip_id\":\"c1\",\"duration_seconds\":6,\"content\":\"Synthetic plan\",\"dialogue\":\"\",\"reference_numbers\":[1]}]}}"
+          }
+        ],
+        "isError": false,
+        "id": "fixture-tool-message"
+      }
+    }
+  },
+  "user": {
+    "seq": 3,
+    "type": "user/message",
+    "data": {
+      "source": {
+        "kind": "user",
+        "rpcId": "fixture-user-rpc",
+        "clientTimeZone": "UTC"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "ok"
+        }
+      ]
+    }
+  }
+}

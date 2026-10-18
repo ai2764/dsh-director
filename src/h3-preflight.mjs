@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
+import { nativeToolContents } from './native-tool-result.mjs'
 
 export const SECTION_KEYS = [
   'subject_definitions', 'summary', 'retention_analysis', 'detailed_description',
@@ -34,12 +35,12 @@ function validateDialogue(sections, dialogue) {
   const blocks=[...detail.matchAll(/<d>(.*?)<\/d>/gs)]
   const outside=detail.replace(/<d>.*?<\/d>/gs,'')
   if (/<\/?d\b/i.test(outside)) fail('malformed dialogue <d> block')
-  if (blocks.length !== dialogue.length) fail('dialogue blocks must match the scripted line count, including zero for silent shots')
+  if (blocks.length !== dialogue.length) fail(`dialogue blocks must match the scripted line count: h3_review.dialogue has ${dialogue.length} line(s), detailed_description has ${blocks.length} <d> block(s). Pass only this clip's scripted lines in h3_review.dialogue and put exactly one <d>[Language] words</d> block per line; use [] and no blocks for a silent clip.`)
   blocks.forEach((b,i) => {
     const match=/^\[([^\]\n]+)\]\s*(.+)$/s.exec(b[1].trim())
     if (!match || /<\/?d\b/i.test(b[1])) fail('each dialogue block must contain [Language] and exact spoken words only')
     if (match[1] !== dialogue[i].language || match[2].trim().replace(/\s+/g,' ') !== dialogue[i].text.trim().replace(/\s+/g,' ')) {
-      fail(`dialogue line ${i+1} does not match the script language and words`)
+      fail(`dialogue line ${i+1} does not match h3_review.dialogue[${i}]: expected <d>[${dialogue[i].language}] ${dialogue[i].text}</d>, found ${b[0]}. Align this clip's prompt and review to the displayed card; do not change approved dialogue merely to pass preflight.`)
     }
     const prefix=detail.slice(i ? blocks[i-1].index+blocks[i-1][0].length : 0,b.index)
     if (!prefix.includes(dialogue[i].speaker)) fail(`dialogue line ${i+1} needs its speaker ${dialogue[i].speaker} outside <d>. Put the exact h3_review.dialogue[${i}].speaker before this line's <d>[${dialogue[i].language}] words</d>, not inside the spoken words; do not change the approved dialogue.`)
@@ -66,10 +67,7 @@ function visualReadEvidence(session, sourcePath) {
   const calls=new Map(events.filter(e=>e.type==='tool/call').map(e=>[e.data.callId,e.data]))
   for(const e of events) {
     if(e.type !== 'tool/result' || !active.has(e.seq)) continue
-    for(const block of e.data.message?.content ?? []) {
-      const call=calls.get(block.toolCallId)
-      if(block.type !== 'tool-result' || block.isError || call?.name !== 'read_image') continue
-      const content=block.content ?? []
+    for(const content of nativeToolContents(e,calls,'read_image')) {
       const image=content.find(b=>b.type==='image' && b.attachment?.attachmentId)
       const envelope=content.filter(b=>b.type==='text').map(b=>b.text).join('\n')
       const actual=/<path>(.*?)<\/path>/s.exec(envelope)?.[1]

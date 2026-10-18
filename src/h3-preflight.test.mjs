@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
+import {createHash} from 'node:crypto'
 import { createSubmitComfyVideo } from './submit-comfy-video.mjs'
 
 const bytes = Buffer.from('controlled reference bytes')
@@ -42,7 +43,7 @@ function officialSections() {
 test('validation reports unconfirmed review before any real submission',async()=>{
   const h=harness(),r=review();r.dialogue[0].speaker='<Subject 1> (S1)';
   const events=h.exec.agent.session.snapshotEvents();
-  events.push({seq:10,type:'tool/result',data:{message:{content:[{type:'tool-result',content:[{type:'text',text:JSON.stringify({kind:'director-media',proposal:{version:'v1',shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256:'a'.repeat(64)}]})}]}]}}});
+  events.push({seq:9,type:'tool/call',data:{callId:'review-card',name:'director_show_media',arguments:'{}'}},{seq:10,type:'tool/result',data:{message:{role:'tool',toolCallId:'review-card',isError:false,content:[{type:'text',text:JSON.stringify({kind:'director-media',card_id:'review-card',proposal:{version:'v1',shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256:'a'.repeat(64),type:'image'}]})}]}}});
   h.exec.agent.session.snapshotEvents=()=>events;
   const result=await h.submit({workflow:graph(officialSections()),h3_review:r,validate_only:true},h.exec);
   assert.equal(result.submission_ready,false);
@@ -55,6 +56,15 @@ test('official Subject provenance retains a Picture without repeating its tag in
   const result=await h.submit({workflow:graph(officialSections()),h3_review:r,validate_only:true},h.exec)
   assert.equal(result.validated,true)
   assert.equal(h.requests.some(r=>r.url.endsWith('/prompt')),false)
+})
+
+test('dialogue preflight identifies the clip-local line count and exact mismatch',async()=>{
+  const h=harness(),r=review()
+  r.dialogue.push({speaker:'Alex',language:'English',text:'Second line.'})
+  await assert.rejects(h.submit({workflow:graph(),h3_review:r,validate_only:true},h.exec),/h3_review\.dialogue has 2 line\(s\).*detailed_description has 1 <d> block\(s\).*only this clip/s)
+  const wrong=review()
+  wrong.dialogue[0].text='Different approved line.'
+  await assert.rejects(h.submit({workflow:graph(),h3_review:wrong,validate_only:true},h.exec),/expected <d>\[English\] Different approved line\.<\/d>, found <d>\[English\] Sample accepted\.<\/d>/s)
 })
 
 test('same-paragraph Subject definitions report the exact newline repair without weakening provenance checks',async()=>{
@@ -81,6 +91,22 @@ test('missing visual evidence specifies the exact next read_image argument',asyn
     assert.match(error.message,/file_path/);assert.match(error.message,/actor\.png/);return true;
   });
   assert.equal(h.requests.length,0)
+});
+
+test('Harness 0.2 direct read_image result satisfies H3 visual preflight',async()=>{
+  const h=harness();
+  const events=[
+    {seq:0,type:'tool/call',data:{callId:'read-1',name:'read_image',arguments:JSON.stringify({file_path:source})}},
+    {seq:1,type:'tool/result',data:{message:{role:'tool',source:{kind:'tool',callId:'read-1'},toolCallId:'read-1',isError:false,content:[
+      {type:'text',text:`<path>${source}</path>\n<type>image</type>`},
+      {type:'image',attachment:{attachmentId:'sha256:'+'a'.repeat(64),mediaType:'image/png'}},
+    ]}}},
+    {seq:2,type:'assistant/message',data:{message:{source:{kind:'model'},content:[]}}},
+  ];
+  h.exec.agent.session={snapshotEvents:()=>events,surface:{nodes:[1,2]}};
+  const result=await h.submit({workflow:graph(),h3_review:review(),validate_only:true},h.exec);
+  assert.equal(result.validated,true);
+  assert.equal(result.h3_preflight.references[0].read_event_seq,1);
 });
 
 test('all missing reference inspections are reported together',async()=>{
@@ -178,6 +204,9 @@ test('structured H3 sections serialize safely into an existing Turbo4 latent gra
   const result = await h.submit({workflow:g,h3_prompt:s,h3_review:review()},h.exec)
   assert.equal(result.prompt_id,'accepted')
   const submitted = JSON.parse(h.requests.find(r=>r.url.endsWith('/prompt')).init.body).prompt
+  assert.equal(result.h3_effective_prompt.source,'override')
+  assert.equal(result.h3_effective_prompt.summary,'A "deadpan" reaction.\nNo horror. 中文')
+  assert.equal(result.h3_effective_prompt.sha256,createHash('sha256').update(submitted['6'].inputs.prompt).digest('hex'))
   assert.equal(submitted['6'].inputs.prompt,
     'subject_definitions: <Picture 1> defines Alex identity and cream cardigan.\nsummary: A "deadpan" reaction.\nNo horror. 中文\nretention_analysis: <Picture 1> retains Alex identity and cream cardigan; it does not establish the cafe.\ndetailed_description: 0-5 seconds: Alex (S1) from <Picture 1> smiles and says <d>[English] Sample accepted.</d>\noverall_soundscape: Quiet cafe ambience.\nnon_diegetic_music: N/A')
   const unchanged = structuredClone(submitted); unchanged['6'].inputs.prompt = 'old prompt'
@@ -194,6 +223,8 @@ test('structured prompt file is usable with workflow_path without rewriting the 
   })
   const result=await submit({workflow_path:'workflow.json',h3_prompt_path:'sections.json',h3_review:review(),validate_only:true},h.exec)
   assert.equal(result.validated,true)
+  assert.equal(result.h3_effective_prompt.source,'override')
+  assert.equal(result.h3_effective_prompt.summary,sections.summary)
   assert.equal(g['6'].inputs.prompt,'old prompt')
 })
 

@@ -40,8 +40,8 @@ test('real terminal submit rejects an unmet costume-reference request before POS
   const h=harness(),events=h.exec.agent.session.snapshotEvents();
   const sha256=createHash('sha256').update(bytes).digest('hex');
   const card=version=>({kind:'director-media',proposal:{version,shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256,type:'image'}]});
-  const show=(seq,version)=>({seq,type:'tool/result',data:{message:{content:[{type:'tool-result',content:[{type:'text',text:JSON.stringify(card(version))}]}]}}});
-  events.push(show(3,'old'),{seq:4,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'白色紧身衣加入ref'}]}},show(5,'white'),{seq:6,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'ok'}]}});
+  const show=(seq,version)=>[{seq,type:'tool/call',data:{callId:'card-'+seq,name:'director_show_media',arguments:'{}'}},{seq:seq+1,type:'tool/result',data:{message:{role:'tool',toolCallId:'card-'+seq,isError:false,content:[{type:'text',text:JSON.stringify(card(version))}]}}}];
+  events.push(...show(3,'old'),{seq:5,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'白色紧身衣加入ref'}]}},...show(6,'white'),{seq:8,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'ok'}]}});
   await assert.rejects(h.submit({workflow:makeGraph(),h3_review:review},h.exec),/reference.*pending/i);
   assert.equal(h.requests.some(r=>/\/prompt$|\/api\/models\/unload$/.test(r.url)),false);
   assert.equal(h.concluded,0);
@@ -49,10 +49,23 @@ test('real terminal submit rejects an unmet costume-reference request before POS
 
 test('submission rechecks a user revision arriving while async visual preflight runs',async()=>{
   const h=harness(),events=h.exec.agent.session.snapshotEvents(),sha256=createHash('sha256').update(bytes).digest('hex');
-  const value={kind:'director-media',proposal:{version:'v1',shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256,type:'image'}]};
-  events.push({seq:3,type:'tool/result',data:{message:{content:[{type:'tool-result',content:[{type:'text',text:JSON.stringify(value)}]}]}}},{seq:4,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'ok'}]}});
-  let reads=0;h.exec.agent.session.snapshotEvents=()=>{if(++reads===2)events.push({seq:5,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'Change the outfit to red'}]}});return events;};
+  const value={kind:'director-media',card_id:'async-card',proposal:{version:'v1',clip_dimensions:[{clip_id:'c1',width:1280,height:704}],shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256,type:'image'}]};
+  events.push({seq:3,type:'tool/call',data:{callId:'async-card',name:'director_show_media',arguments:'{}'}},{seq:4,type:'tool/result',data:{message:{role:'tool',toolCallId:'async-card',isError:false,content:[{type:'text',text:JSON.stringify(value)}]}}},{seq:5,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'ok'}]}});
+  let reads=0;h.exec.agent.session.snapshotEvents=()=>{if(++reads===2)events.push({seq:6,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'Change the outfit to red'}]}});return events;};
   await assert.rejects(h.submit({workflow:makeGraph(),h3_review:review},h.exec),/confirm/);
+  assert.equal(h.requests.some(r=>/\/prompt$|\/api\/models\/unload$/.test(r.url)),false);
+});
+
+test('approved output size blocks an H3 graph with a different canvas before ComfyUI POST',async()=>{
+  const h=harness(),events=h.exec.agent.session.snapshotEvents(),sha256=createHash('sha256').update(bytes).digest('hex');
+  const card={kind:'director-media',proposal:{version:'size-v1',clip_dimensions:[{clip_id:'c1',width:1344,height:768}],shots:[{clip_id:'c1',reference_numbers:[1]}]},items:[{sha256,type:'image'}]};
+  events.push({seq:3,type:'tool/call',data:{callId:'size-card',name:'director_show_media',arguments:'{}'}},{seq:4,type:'tool/result',data:{message:{role:'tool',toolCallId:'size-card',isError:false,content:[{type:'text',text:JSON.stringify(card)}]}}},{seq:5,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'Confirm size-v1'}]}});
+  const checked=await h.submit({workflow:makeGraph(),h3_review:review,validate_only:true},h.exec);
+  assert.equal(checked.submission_ready,false);
+  assert.match(checked.submission_blockers.join(' '),/1344.*768|dimension|size/i);
+  const matching=await h.submit({workflow:makeGraph({width:1344,height:768}),h3_review:review,validate_only:true},h.exec);
+  assert.equal(matching.submission_ready,true);
+  await assert.rejects(h.submit({workflow:makeGraph(),h3_review:review},h.exec),/1344.*768|dimension|size/i);
   assert.equal(h.requests.some(r=>/\/prompt$|\/api\/models\/unload$/.test(r.url)),false);
 });
 

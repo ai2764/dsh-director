@@ -191,6 +191,9 @@ test('registers an owned background job that completes with Comfy output paths',
   assert.equal(registered.owner, owner)
   assert.equal(outcome.status, 'completed')
   assert.match(outcome.output, /directed\/shot-01\.mp4/)
+  assert.match(JSON.parse(outcome.output).review_instruction,/verify.*files/i)
+  assert.match(JSON.parse(outcome.output).review_instruction,/visual.*review.*user.*unless explicitly requested/i)
+  assert.match(JSON.parse(outcome.output).review_instruction,/continue.*authorized chain.*technical checks/i)
   assert.match(outcome.output, /http:\/\/127\.0\.0\.1:8188\/view\?filename=shot-01\.mp4&subfolder=directed&type=output/)
 })
 
@@ -413,9 +416,11 @@ test('registers a generic Comfy job tool while preserving the legacy video tool'
     'submit_comfy_video',
   ])
   assert.match(registered[0].description, /image.*video/i)
-  assert.match(registered[0].description, /instead of manually/i)
+  assert.equal(registered[0].parameters.properties.card_id.type, 'string')
+  assert.equal(registered[0].parameters.properties.clip_id.type, 'string')
   assert.match(registered[0].description, /never retry an identical failed workflow/i)
   assert.match(registered[0].description, /output_artifacts.*do not search/i)
   assert.match(registered[0].description, /Invoke-WebRequest.*never use web_fetch/i)
   assert.match(registered[0].description, /object_info.*recursive filesystem/i)
+  assert.match(registered[0].description, /pretrim.*delivered_frames/i)
 })

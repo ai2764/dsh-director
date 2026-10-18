@@ -20,10 +20,11 @@ license does not relicense it. Fetching files separately is not a license exempt
 or a determination of the user's eligibility. No model weights, custom nodes or
 workflow graphs are downloaded by this setup tool.
 
-**History note:** the initial local review commit (0.1.28) retained official
-documents. Removing them from the current tree does not erase prior commits.
-Public Git-history preparation is a separate owner decision; no history rewrite
-or publication has occurred.
+**History note:** private development history included the official documents in
+an initial review commit. The current source tree and npm archive exclude them.
+A source-only `public-release` root snapshot is intended for publication without
+those private parents; older branches in the development repository retain their
+history. Review the exact remote branch/history before changing visibility.
 
 ## npm dependencies
 

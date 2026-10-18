@@ -5,6 +5,13 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {localFs} from './harness.mjs';
 import {createMediaStore} from '../src/media-store.mjs';
+test('flat media interface still rejects empty calls and mixed replay/create before IO',async()=>{
+  const {createMediaTool}=await import('../src/media-tool.mjs');
+  const tool=createMediaTool({store:{register(){assert.fail('invalid modes must not touch storage');}}});
+  await assert.rejects(tool.execute({},{}),/Provide 1–12 media items/);
+  await assert.rejects(tool.execute({card_id:'latest',items:[{path:'cat.png'}]},{}),/do not mix/);
+  await assert.rejects(tool.execute({card_id:'latest',proposal:{},title:'changed'},{}),/do not mix/);
+});
 test('media tool presents durable metadata without concluding or granting approval',async()=>{
   const {createMediaTool}=await import('../src/media-tool.mjs');
   const cwd=await mkdtemp(join(tmpdir(),'dsh-media-tool-'));
@@ -31,6 +38,21 @@ test('external image evidence cannot come from filename or error/text-only tool 
   assert.equal(inspectedExternalImage(session,path),true);
   result.data.message.content[0].isError=true;
   assert.equal(inspectedExternalImage(session,path),false);
+});
+
+test('external image evidence accepts Harness 0.2 direct read_image result',async()=>{
+  const {inspectedExternalImage}=await import('../src/media-tool.mjs');
+  const path=join(tmpdir(),'actor.png');
+  const events=[
+    {seq:1,type:'tool/call',data:{callId:'c',name:'read_image'}},
+    {seq:2,type:'tool/result',data:{message:{role:'tool',source:{kind:'tool',callId:'c'},toolCallId:'c',isError:false,content:[
+      {type:'text',text:`<path>${path}</path>`},
+      {type:'image',attachment:{attachmentId:'sha256:'+'a'.repeat(64)}},
+    ]}}},
+  ];
+  assert.equal(inspectedExternalImage({snapshotEvents:()=>events},path),true);
+  events[1].data.message.isError=true;
+  assert.equal(inspectedExternalImage({snapshotEvents:()=>events},path),false);
 });
 
 test('shot proposal preserves ordered bindings to registered media without approving production',async()=>{

@@ -8,7 +8,8 @@ test('release archive excludes personal media and works without workspace skills
   for(const file of ['LICENSE.minimax-h3','skills/h3-prompt-writing/references/ref-en.txt','skills/h3-prompt-writing/references/base-en.txt','skills/h3-prompt-writing/references/upstream-SKILL.md'])assert.equal(files.includes('package/'+file),false,`Official original must not be bundled: ${file}`);
   assert.equal(files.some(f=>/\.(jpg|jpeg|png|webp|gif|mp4|webm|mkv|wav|mp3|gguf|safetensors|jsonl)$|session|settings|\.env|\/templates\/|\/workflows\//i.test(f)),false);
   const runtime = new Set((await readdir('src')).filter(name=>name.endsWith('.mjs')&&!name.endsWith('.test.mjs')).map(name=>'package/lib/'+name));
-  const rootFiles = new Set(['package.json','README.md','LICENSE','NOTICE','THIRD_PARTY_NOTICES.md','SECURITY.md','cordis.patch.yml'].map(name=>'package/'+name));
+  const rootFiles = new Set(['package.json','README.md','docs/CONFIGURATION.md','docs/RELEASE_REVIEW.md','LICENSE','NOTICE','THIRD_PARTY_NOTICES.md','SECURITY.md','cordis.patch.yml'].map(name=>'package/'+name));
+  assert.ok(files.includes('package/docs/CONFIGURATION.md'),'The installed README must link to a bundled configuration guide');
   for (const file of files) assert.ok(runtime.has(file)||rootFiles.has(file)||file==='package/lib/client.js'||/^package\/skills\/(director|h3-prompt-writing)\/(SKILL\.md|references\/[^/]+\.(md|txt))$/.test(file),`Unexpected release content: ${file}`);
   const root=await mkdtemp(join(tmpdir(),"dsh pack $literal's-"));execFileSync('tar',['-xzf',tarball,'-C',root]);
   const {createBundledProvider}=await import(new URL('file:///'+join(root,'package/lib/skills.mjs').replaceAll('\\','/')));

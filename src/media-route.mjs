@@ -22,7 +22,7 @@ export function createMediaHandler({store,requestRejection,controllers=new Set()
       const id=/^\/director-media\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)?.[1];
       const sessions=url.searchParams.getAll('session');
       if(!id||sessions.length!==1||[...url.searchParams.keys()].some(k=>k!=='session'))throw new MediaError('Media not found.',404);
-      media=await store.openVerified(id,sessions[0],controller.signal);
+      media=await store.openForPlayback(id,sessions[0],controller.signal);
       let range;
       try{range=req.headers.range?parseSingleRange(req.headers.range,media.size):{start:0,end:media.size-1};}
       catch(error){res.writeHead(416,{'Content-Range':`bytes */${media.size}`});res.end();return;}

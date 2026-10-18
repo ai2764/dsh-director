@@ -25,6 +25,6 @@ test('real media card enlarges, pauses both players and restores focus on close'
   assert.equal(document.querySelector('dialog'),null);assert.equal(document.activeElement,enlarge);assert.ok(pauses>=2);
   const malformed={...result,items:[{...result.items[0],caption:{bad:true}}]};
   await act(()=>root.render(React.createElement(MediaCard,{block:{...block,content:[{type:'text',text:JSON.stringify(malformed)}]},sessionId:'s'})));
-  assert.match(document.querySelector('[role="alert"]').textContent,/unavailable/);
+  assert.match(document.querySelector('[role="alert"]').textContent,/metadata.*invalid|unsafe media URL/);
   await act(()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;
 });

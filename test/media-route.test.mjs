@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp,writeFile,open} from 'node:fs/promises';
+import {mkdtemp,writeFile,open,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {harnessRequire} from './harness.mjs';
+import {harnessRequire,localFs} from './harness.mjs';
 import {Readable} from 'node:stream';
 test('real HTTP media delivery supports GET HEAD seeking and refuses requests before opening',async t=>{
   const {createMediaHandler}=await import('../src/media-route.mjs');
   const root=await mkdtemp(join(tmpdir(),'dsh-route-'));const path=join(root,'clip');
   const bytes=Buffer.from('0123456789');await writeFile(path,bytes);
   const id='a'.repeat(43);let opened=0;
-  const handler=createMediaHandler({requestRejection(req){return req.headers['x-test-deny']==='auth'?401:req.headers['x-test-deny']==='trust'?403:undefined;},store:{async openVerified(got,session){
+  const handler=createMediaHandler({requestRejection(req){return req.headers['x-test-deny']==='auth'?401:req.headers['x-test-deny']==='trust'?403:undefined;},store:{async openForPlayback(got,session){
     if(got!==id||session!=='s')throw Object.assign(new Error('Media not found.'),{status:404});
     opened++;return {handle:await open(path,'r'),size:10,mime:'video/mp4',filename:'clip.mp4'};
   }}});
@@ -40,10 +40,27 @@ test('native connection enforces Host Origin and enabled cookie auth before medi
   assert.equal(connection.requestRejection({headers:{...good.headers,host:'evil.test'}}),403);
   assert.equal(connection.requestRejection({headers:{...good.headers,origin:'http://evil.test'}}),403);
 });
+test('archived video still supports HTTP seeking after its source is removed',async t=>{
+  const {createMediaStore}=await import('../src/media-store.mjs');
+  const {createMediaHandler}=await import('../src/media-route.mjs');
+  const cwd=await mkdtemp(join(tmpdir(),'dsh-archive-http-')),path=join(cwd,'clip.mp4');
+  const bytes=Buffer.from('00000018667479706d703432000000006d70343269736f6d','hex');
+  await writeFile(path,bytes);
+  const store=createMediaStore({root:join(cwd,'archive')}),item=await store.register({sessionId:'s',cwd,path,fs:localFs()});
+  await unlink(path);
+  const server=createServer(createMediaHandler({store,requestRejection:()=>undefined}));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${server.address().port}/director-media/${item.id}?session=s`;
+  const response=await fetch(url,{headers:{range:'bytes=4-7'}});
+  assert.equal(response.status,206);assert.equal(await response.text(),'ftyp');
+  const head=await fetch(url,{method:'HEAD'});
+  assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(bytes.length));
+  assert.equal((await fetch(url.replace('session=s','session=other'))).status,404);
+});
 test('socket abort and plugin disposal close active media handles',async t=>{
   const {registerMediaRoute}=await import('../src/media-route.mjs');
   let route,unregistered=false,closed=0;
-  const dispose=registerMediaRoute({connection:{requestRejection:()=>undefined},webServer:{register:r=>{route=r;return()=>{unregistered=true;};}}},{async openVerified(){return {size:1000000,mime:'video/mp4',filename:'clip.mp4',handle:{createReadStream:()=>new Readable({read(){this.push(Buffer.alloc(100));}}),async close(){closed++;}}};}});
+  const dispose=registerMediaRoute({connection:{requestRejection:()=>undefined},webServer:{register:r=>{route=r;return()=>{unregistered=true;};}}},{async openForPlayback(){return {size:1000000,mime:'video/mp4',filename:'clip.mp4',handle:{createReadStream:()=>new Readable({read(){this.push(Buffer.alloc(100));}}),async close(){closed++;}}};}});
   const server=createServer(route.handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{dispose();server.closeAllConnections();server.close();});
   const url=`http://127.0.0.1:${server.address().port}/director-media/${'a'.repeat(43)}?session=s`;
   const first=await fetch(url);await first.body.cancel();

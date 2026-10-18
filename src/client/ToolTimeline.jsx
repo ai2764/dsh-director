@@ -1,8 +1,10 @@
 import React,{useEffect,useRef} from 'react';
 import {MediaCard} from './MediaCard.jsx';
+import {parseMediaResult} from './media-result.mjs';
 
 const mediaTools=new Set(['director_show_media','director_edit_review']);
 const directorTools=new Set(['director_assets',...mediaTools,'director_stage_images','submit_comfy_job','submit_comfy_video']);
+const DirectorNode=()=> <span className="dsh-director-node dsh-director-node-director" role="img" aria-label="Director tool" title="Director tool"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M2 6.5h12v6.25A1.25 1.25 0 0 1 12.75 14h-9.5A1.25 1.25 0 0 1 2 12.75z"/><path d="m1.5 3.5 11.7-2 .5 3-11.7 2zM5 3l2 2.7M9 2.3l2 2.7"/></svg></span>;
 
 function shellFailure(block,name,args,text){
   const shell=block.kind==='tool-result'&&['bash','pwsh'].includes(name)&&typeof args.description==='string'&&args.description.trim()&&!args.run_in_background&&block.content?.length===1;
@@ -41,13 +43,14 @@ function currentCalls(block,ids){
   return running||childRunning;
 }
 
-function CallRow({block,depth=0,sessionId,inspectCall,renderMessageImages,activeCallIds,useChat}){
+function CallRow({block,depth=0,sessionId,inspectCall,renderMessageImages,activeCallIds,useChat,turnClosed}){
   const settled=block.kind==='tool-result';
   const details=useRef(null),active=activeCallIds.has(block.callId);
   // Reset only on lifecycle/current-call changes. Manual history expansion
   // survives ordinary rerenders, and a running -> result update always folds.
   useEffect(()=>{if(details.current)details.current.open=active;},[active,settled,block.callId]);
   const head=settled?block.call:block;
+  const hasArguments=typeof head?.argsRaw==='string'&&head.argsRaw.trim().length>0;
   const name=head?.name||block.callId;
   const text=(block.content??[]).filter(item=>item.type==='text').map(item=>item.text).join('\n');
   const images=(block.content??[]).filter(item=>item.type==='image'&&item.attachment).map(item=>({attachment:item.attachment}));
@@ -59,18 +62,19 @@ function CallRow({block,depth=0,sessionId,inspectCall,renderMessageImages,active
   const marker=shellFailure(block,name,args,text),shellFailed=Boolean(marker);
   const state=settled?(block.isError||shellFailed?'error':'returned'):'running';
   const visibleMedia=mediaTools.has(name);
+  const standaloneMedia=visibleMedia&&parseMediaResult(block,sessionId).kind==='ready';
   const director=directorTools.has(name);
   return <>
     <div className={`dsh-director-tool-row dsh-director-tool-${state}`} style={{'--director-depth':Math.min(depth,8)}} data-chat-call-id={block.callId} data-chat-anchor-key={`call:${block.callId}`}>
-      <details ref={details}>
-        <summary>{director?<span className="dsh-director-node dsh-director-node-director" role="img" aria-label="Director tool" title="Director tool"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M2 6.5h12v6.25A1.25 1.25 0 0 1 12.75 14h-9.5A1.25 1.25 0 0 1 2 12.75z"/><path d="m1.5 3.5 11.7-2 .5 3-11.7 2zM5 3l2 2.7M9 2.3l2 2.7"/></svg></span>:<span className="dsh-director-node" aria-hidden="true"/>}<span className="dsh-director-tool-name">{name}</span><span className="dsh-director-tool-hint">{hint.split('\n')[0].slice(0,180)}</span><span className="dsh-director-tool-state" role={state==='running'?'status':undefined}>{state==='running'?'Running':state==='error'?'Failed':'Returned'}</span>{duration!==null&&<span className="dsh-director-tool-duration">{duration.toFixed(1)}s</span>}</summary>
-        <div className="dsh-director-tool-log"><h4>Arguments</h4><pre>{head?.argsRaw||'Call arguments are outside the current history window.'}</pre>{settled&&<><h4>Results</h4><pre>{text||JSON.stringify(block.content??[],null,2)}</pre>{(block.content??[]).some(item=>item.type!=='text')&&<><h4>Full results (including attachments)</h4><pre>{JSON.stringify(block.content,null,2)}</pre></>}</>}{inspectCall&&<button onClick={()=>inspectCall(block.callId)}>View call details</button>}</div>
+      {!standaloneMedia&&<details ref={details}>
+        <summary>{director?<DirectorNode/>:<span className="dsh-director-node" aria-hidden="true"/>}<span className="dsh-director-tool-name">{name}</span><span className="dsh-director-tool-hint">{hint.split('\n')[0].slice(0,180)}</span><span className="dsh-director-tool-state" role={state==='running'?'status':undefined}>{state==='running'?'Running':state==='error'?'Failed':'Returned'}</span>{duration!==null&&<span className="dsh-director-tool-duration">{duration.toFixed(1)}s</span>}</summary>
+        <div className="dsh-director-tool-log"><h4>Arguments</h4>{hasArguments?<pre>{head.argsRaw}</pre>:settled?<p>Call arguments have not been loaded. {inspectCall?'Open call details or load earlier messages.':'Load earlier messages to view them.'}</p>:<p role="status">Preparing tool arguments…</p>}{settled&&<><h4>Results</h4><pre>{text||JSON.stringify(block.content??[],null,2)}</pre>{(block.content??[]).some(item=>item.type!=='text')&&<><h4>Full results (including attachments)</h4><pre>{JSON.stringify(block.content,null,2)}</pre></>}</>}{inspectCall&&<button onClick={()=>inspectCall(block.callId)}>View call details</button>}</div>
         {!visibleMedia&&images.length>0&&renderMessageImages&&<div className="dsh-director-tool-images">{renderMessageImages({images,align:'start'})}</div>}
-      </details>
+      </details>}
       {state==='error'&&<p className="dsh-director-tool-error" role="alert">{shellFailed?`${marker[0].trim()}\n${text.slice(0,400)}`:text.slice(0,400)||block.error?.code||'Tool call failed. Expand for details.'}</p>}
-      {visibleMedia&&<MediaCard block={block} sessionId={sessionId} useChat={useChat}/>}
+      {visibleMedia&&<MediaCard block={block} sessionId={sessionId} useChat={useChat} leadingIcon={standaloneMedia?<DirectorNode/>:null} turnClosed={turnClosed}/>}
     </div>
-    {(block.subCalls??[]).map(child=><CallRow key={child.callId} block={child} depth={depth+1} sessionId={sessionId} inspectCall={inspectCall} renderMessageImages={renderMessageImages} activeCallIds={activeCallIds} useChat={useChat}/>)}
+    {(block.subCalls??[]).map(child=><CallRow key={child.callId} block={child} depth={depth+1} sessionId={sessionId} inspectCall={inspectCall} renderMessageImages={renderMessageImages} activeCallIds={activeCallIds} useChat={useChat} turnClosed={turnClosed}/>)}
   </>;
 }
 export function ToolTimeline({node,sessionId,inspectCall,renderMessageImages,useChat}){
@@ -81,5 +85,5 @@ export function ToolTimeline({node,sessionId,inspectCall,renderMessageImages,use
     return <section className="dsh-director-timeline" aria-label="Tool execution nodes"><details className="dsh-director-tool-history" key={`${sessionId}:${node.key}`}><summary>Completed · {count} tool {count===1?'call':'calls'}</summary><div className="dsh-director-tool-history-rows">{group.map(member=><CallRow key={member.key} block={member.data.root} sessionId={sessionId} inspectCall={inspectCall} renderMessageImages={renderMessageImages} activeCallIds={new Set()}/>)}</div></details></section>;
   }
   const activeCallIds=new Set();currentCalls(node.data.root,activeCallIds);
-  return <section className="dsh-director-timeline" aria-label="Tool execution nodes"><CallRow block={node.data.root} sessionId={sessionId} inspectCall={inspectCall} renderMessageImages={renderMessageImages} activeCallIds={activeCallIds} useChat={useChat}/></section>;
+  return <section className="dsh-director-timeline" aria-label="Tool execution nodes"><CallRow block={node.data.root} sessionId={sessionId} inspectCall={inspectCall} renderMessageImages={renderMessageImages} activeCallIds={activeCallIds} useChat={useChat} turnClosed={node.location?.turn?.status!=='open'}/></section>;
 }

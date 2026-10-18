@@ -22,6 +22,33 @@ test('C5 shot relevance survives host and durable browser validation without cha
   assert.deepEqual(p,before,'normalization must not alias caller arrays');
 });
 
+test('reviewed clip dimensions survive validation and must cover every clip exactly once',()=>{
+  const p={...plan(),clip_dimensions:[{clip_id:'C5',width:1344,height:768}]};
+  assert.deepEqual(validateProposal(p,5,items).clip_dimensions,p.clip_dimensions);
+  for(const dimensions of [[],[{clip_id:'C4',width:1344,height:768}],[{clip_id:'C5',width:1344,height:768},{clip_id:'C5',width:1344,height:768}],[{clip_id:'C5',width:'1344',height:768}]]){
+    assert.throws(()=>validateProposal({...p,clip_dimensions:dimensions},5,items),/clip.*dimension|width|height/i);
+  }
+});
+
+test('approved H3 clip size must match the actual graph canvas before submission',()=>{
+  const p={...plan(),clip_dimensions:[{clip_id:'C5',width:1344,height:768}]};
+  const refs=submitted([1,2,3,4,5]);
+  assert.doesNotThrow(()=>assertProposalSubmission([card(p),approve],refs,{width:1344,height:768}));
+  assert.throws(()=>assertProposalSubmission([card(p),approve],refs,{width:1280,height:704}),/1344.*768|dimension|size/i);
+  assert.throws(()=>assertProposalSubmission([card(plan()),approve],refs,{width:1344,height:768}),/dimension|size|specif/i);
+  assert.throws(()=>assertProposalSubmission([card(p),approve],refs,{width:['node',0],height:768}),/dimension|size|resolv/i);
+});
+
+test('approved clip duration must match delivered frames after H3 alignment and context trim',()=>{
+  const p={...plan(),clip_dimensions:[{clip_id:'C5',width:1344,height:768}],shots:[shot('S9',[1,3,5])]};
+  p.shots[0].duration_seconds=5;
+  const refs=submitted([1,2,3,4,5]);
+  const generation={width:1344,height:768,timing:{requested_frames:217,aligned_frames:226,pinned_frames:22,delivered_frames:204,fps:24,delivered_seconds:8.5}};
+  assert.throws(()=>assertProposalSubmission([card(p),approve],refs,generation),/duration|8\.5|5 seconds/i);
+  generation.timing={...generation.timing,requested_frames:141,aligned_frames:141,delivered_frames:119,delivered_seconds:4.958};
+  assert.doesNotThrow(()=>assertProposalSubmission([card(p),approve],refs,generation));
+});
+
 test('C5 submission uses approved clip order instead of per-shot first encounter order',()=>{
   const entries=[card(plan()),approve];
   assert.doesNotThrow(()=>assertProposalSubmission(entries,submitted([1,2,3,4,5])));

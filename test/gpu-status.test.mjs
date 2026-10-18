@@ -25,14 +25,29 @@ test('loaded LLM during rendering is a conflict, not a falsely reassuring unload
   const f=await fixture();f.remote.queue.queue_running=[[0,'p']];f.remote.running={running:[{model:'qwen'}]};
   const s=await f.status.snapshot();assert.equal(s.blocked,true);assert.equal(s.llm,'loaded');assert.match(s.warning,/LLM.*loaded/i);
 });
-test('unknown transport, malformed queue and cancelled monitors cannot unlock sending',async()=>{
-  const f=await fixture();f.remote.queue={};assert.equal((await f.status.snapshot()).blocked,true);
+test('unknown transport without a GPU handoff does not block coding, cancelled monitors still require release',async()=>{
+  const f=await fixture();f.remote.queue={};assert.equal((await f.status.snapshot()).blocked,false);
   f.remote.queue={queue_running:[],queue_pending:[]};f.status.update({prompt_id:'p',phase:'cancelled'});
   f.remote.stats.devices[0].torch_vram_total=10*GiB;
   assert.equal((await f.status.snapshot()).blocked,true);
   f.remote.stats.devices[0].torch_vram_total=0;assert.equal((await f.status.snapshot()).blocked,false,'cancelled monitoring requires fresh physical release proof');
   const offline=f.mod.createGpuStatus({fetchImpl:async()=>{throw Error('offline');}});
   assert.equal((await offline.snapshot()).phase,'unknown');
+  assert.equal((await offline.snapshot()).blocked,false);
+  offline.update({prompt_id:'active',phase:'generating'});
+  assert.equal((await offline.snapshot()).blocked,true,'an established managed handoff must survive status outages');
+});
+
+test('known local GPU occupancy stays protected if status becomes unavailable',async()=>{
+  const {createGpuStatus}=await import('../src/gpu-status.mjs');
+  let offline=false;
+  const status=createGpuStatus({fetchImpl:async url=>{
+    if(offline)throw Error('offline');
+    const path=new URL(url).pathname;
+    return Response.json(path==='/queue'?{queue_running:[[0,'p']],queue_pending:[]}:path==='/running'?{running:[]}:{devices:[{type:'cuda',vram_total:24*GiB,vram_free:GiB,torch_vram_total:20*GiB,torch_vram_free:0}]});
+  }});
+  assert.equal((await status.snapshot()).blocked,true);
+  offline=true;assert.equal((await status.snapshot()).blocked,true);
 });
 test('idle LLM occupancy is allowed but leftover Comfy cache is not',async()=>{
   const f=await fixture();f.remote.running={running:[{model:'qwen'}]};f.remote.stats.devices[0].vram_free=GiB;
@@ -65,4 +80,38 @@ test('a send check cannot join a poll started before a new ComfyUI prompt',async
   const poll=status.snapshot();busy=true;
   const send=await status.snapshot();assert.equal(send.blocked,true);assert.equal(send.phase,'generating');
   finishStats();assert.equal((await poll).blocked,true,'readiness must recheck the queue after slow memory statistics');
+});
+
+test('explicit recovery frees idle orphaned ComfyUI memory and refuses a busy queue or loaded LLM',async()=>{
+  const remote={queue:{queue_running:[],queue_pending:[]},running:{running:[]},stats:{devices:[{type:'cuda',vram_total:24*GiB,vram_free:17*GiB,torch_vram_total:96*1024**2,torch_vram_free:80*1024**2}]}},calls=[];
+  const {createGpuStatus}=await import('../src/gpu-status.mjs');
+  const status=createGpuStatus({fetchImpl:async(url,init={})=>{
+    const path=new URL(url).pathname;calls.push({path,method:init.method??'GET'});
+    if(path==='/free'){
+      remote.stats.devices[0].vram_free=23*GiB;remote.stats.devices[0].torch_vram_total=64*1024**2;remote.stats.devices[0].torch_vram_free=56*1024**2;
+      return Response.json({});
+    }
+    return Response.json(path==='/queue'?remote.queue:path==='/running'?remote.running:remote.stats);
+  }});
+  assert.equal((await status.snapshot()).phase,'releasing_vram');
+  assert.equal((await status.recover()).phase,'ready');
+  assert.deepEqual(calls.filter(c=>c.path==='/free'),[{path:'/free',method:'POST'}]);
+  remote.queue.queue_running=[[0,'active']];
+  await assert.rejects(status.recover(),/queue|busy/i);
+  remote.queue.queue_running=[];remote.running.running=[{model:'qwen'}];
+  await assert.rejects(status.recover(),/LLM|model/i);
+  assert.equal(calls.filter(c=>c.path==='/free').length,1);
+});
+
+test('recovery route authenticates and accepts only POST',async t=>{
+  const {createGpuReleaseHandler}=await import('../src/gpu-status.mjs');
+  let called=0;
+  const server=createServer(createGpuReleaseHandler({status:{recover:async()=>{called++;return {phase:'ready',blocked:false,llm:'unloaded'};}},requestRejection:req=>req.headers['x-deny']?403:undefined}));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${server.address().port}/director-gpu-release`;
+  assert.equal((await fetch(url,{method:'POST',headers:{'x-deny':'1'}})).status,403);
+  assert.equal((await fetch(url)).status,405);
+  assert.equal(called,0);
+  const response=await fetch(url,{method:'POST'});
+  assert.equal(response.status,200);assert.equal((await response.json()).phase,'ready');assert.equal(called,1);
 });

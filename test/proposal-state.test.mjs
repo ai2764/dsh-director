@@ -9,6 +9,43 @@ const proposal=(seq,version,hashes=[face])=>({seq,kind:'proposal',value:{proposa
 const user=(seq,text)=>({seq,kind:'user',text});
 async function api(){return import('../src/proposal-state.mjs');}
 
+test('reference input wiring instructions do not request a card image replacement',async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  for(const text of [
+    '复制 template.json 作为 Ref2AV 节点接口模板，仅在测试目录 agent/ 中改副本，移除旧角色的参考输入并绑定这张猫图',
+    '移除旧角色的参考图输入并绑定这张猫图',
+    'Remove old reference inputs and bind the same cat image',
+  ]){
+    const entries=[user(1,text),proposal(2,'v1'),user(3,'确认 v1')];
+    assert.deepEqual(proposalState(entries,'v1').pending,[],text);
+    assert.doesNotThrow(()=>assertProposalSubmission(entries,[{sha256:face}]));
+    assert.throws(()=>assertProposalSubmission(entries,[{sha256:alternate}]),/bytes\/order/);
+  }
+});
+
+test('technical reference inputs do not hide actual image edits in a mixed instruction',async()=>{
+  const {proposalState}=await api();
+  for(const text of [
+    '移除旧角色的参考输入并绑定这张猫图，同时替换第二张参考图',
+    'Remove old reference inputs and bind the same cat image, then replace reference #2',
+    'Remove reference #2 and its input socket',
+  ])assert.equal(proposalState([proposal(1,'v1',[face,layout]),user(2,text)],'v1').status,'references_pending',text);
+});
+
+test('legacy technical reference input blockers are recomputed without clearing missing assets',async()=>{
+  const {proposalState}=await api();
+  const text='移除旧角色的参考输入并绑定这张猫图';
+  const p=proposal(2,'v1');p.value.proposal.pending_references=[text,'Missing actor layout'];
+  assert.deepEqual(proposalState([user(1,text),p],'v1').pending,['Missing actor layout']);
+});
+
+test('a report of fixing a reference classifier does not become a new reference request',async()=>{
+  const {proposalState}=await api();
+  const text='插件已更新到 0.1.66，修复了把“参考输入接线”误判为“换参考图”的问题。继续测试';
+  assert.deepEqual(proposalState([proposal(1,'v1'),user(2,text),proposal(3,'v2')],'v2').pending,[]);
+  assert.equal(proposalState([proposal(1,'v1'),user(2,text+'，同时替换第二张参考图')],'v1').status,'references_pending');
+});
+
 test('human confirmation updates latest card and a new version supersedes the old card',async()=>{
   const {proposalState}=await api();
   const entries=[proposal(1,'v1'),user(2,'ok')];
@@ -58,8 +95,17 @@ test('human reference requests survive old incomplete cards and model text canno
 test('a status question preserves confirmation and a prohibition does not demand a new ref',async()=>{
   const {proposalState}=await api();
   assert.equal(proposalState([proposal(1,'v1'),user(2,'ok'),user(3,'视频跑完了吗？')],'v1').status,'confirmed');
+  assert.equal(proposalState([proposal(1,'v1'),user(2,'ok'),user(3,'好了吗')],'v1').status,'confirmed');
   const state=proposalState([proposal(1,'v1'),user(2,'Do not generate new references. Keep these files.'),user(3,'ok')],'v1');
   assert.equal(state.status,'confirmed');
+});
+
+test('same approved card survives an explicit graph-only retry, but not a creative edit or new card',async()=>{
+  const {proposalState}=await api();
+  const retry='继续此前已确认的 C5：修复工作流的音频 VAE 接线，提示词、参考图、时长未改。只重试这一版。';
+  assert.equal(proposalState([proposal(1,'v4'),user(2,'ok'),user(3,retry)],'v4').status,'confirmed');
+  assert.equal(proposalState([proposal(1,'v4'),user(2,'ok'),user(3,'继续此前已确认的 C5，但改台词，其他参考图不变')],'v4').status,'changes_requested');
+  assert.equal(proposalState([proposal(1,'v4'),user(2,'ok'),user(3,retry),proposal(4,'v4')],'v4').status,'awaiting_confirmation');
 });
 
 test('submission preserves the approved nonnumeric Picture order',async()=>{
@@ -81,6 +127,19 @@ test('a first complete reference proposal in a fresh session is not permanently 
   const {proposalState}=await api();
   const entries=[user(1,'Add a costume reference'),proposal(2,'first',[layout]),user(3,'ok')];
   assert.equal(proposalState(entries,'first').status,'confirmed');
+});
+
+test('C2 reference video context is not a Picture edit and legacy copied pending text clears',async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  const before=proposal(1,'c2-plan',[face,layout]);
+  const after=proposal(3,'c3-closeup',[face,layout]);
+  after.value.proposal.pending_references=['我那个工作流是把C2加入参考视频'];
+  const entries=[before,user(2,'我那个工作流是把C2加入参考视频'),after,user(4,'ok')];
+  const state=proposalState(entries,'c3-closeup');
+  assert.equal(state.status,'confirmed');
+  assert.deepEqual(state.pending,[]);
+  assert.deepEqual(state.unverifiable??[],[]);
+  assert.doesNotThrow(()=>assertProposalSubmission(entries,[{sha256:face},{sha256:layout}]));
 });
 
 const mutations=[
@@ -285,6 +344,15 @@ test('nominal no-list reference prohibitions preserve approved bindings',async()
     assert.deepEqual(proposalState(entries,'v1').pending,[],text);
     assert.doesNotThrow(()=>assertProposalSubmission(entries,[{sha256:face},{sha256:layout}]));
   }
+});
+test('stopping JSON graph edits is not a request to replace four reference images',async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  const instruction='请停止修改四张图和用 PowerShell 重读 JSON';
+  const entries=[proposal(1,'v1',[face,layout]),user(2,instruction),proposal(3,'v2',[face,layout]),user(4,'确认 v2')];
+  assert.deepEqual(proposalState(entries,'v2').pending,[]);
+  assert.doesNotThrow(()=>assertProposalSubmission(entries,[{sha256:face},{sha256:layout}]));
+  entries[2].value.proposal.pending_references=[instruction];
+  assert.deepEqual(proposalState(entries,'v2').pending,[],'old inferred blockers must not survive a corrected card');
 });
 test('a nominal no-list never consumes an actual image-edit directive',async()=>{
   const {proposalState,assertProposalSubmission}=await api();

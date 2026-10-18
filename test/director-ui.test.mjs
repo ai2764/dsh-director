@@ -8,7 +8,7 @@ import React,{act} from 'react';
 import {createRoot} from 'react-dom/client';
 
 async function component(file,name){
-  const built=await build({entryPoints:[file],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic'});
+  const built=await build({entryPoints:[file],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic',loader:{'.css':'text'}});
   const module={exports:{}};
   vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),setTimeout,clearTimeout});
   return module.exports[name];
@@ -28,21 +28,74 @@ const media={kind:'director-media',version:1,session_id:'s',title:'Coffee prank'
 const result=(name,text,error=false,subCalls=[])=>({kind:'tool-result',seq:2,time:2000,callId:name,call:{name,argsRaw:'{"path":"scene.json"}'},callTime:1000,content:[{type:'text',text}],isError:error,subCalls});
 const connected={state:{getSnapshot:()=> 'connected',subscribe:()=>()=>{}}};
 
-test('review displays clip Picture order separately from shot relevance and previews clip-wide-only references',async t=>{
+test('Director extends only its own tool views and resolves the native session input facade',async()=>{
+  const apply=await component('src/client/index.jsx','apply'),registrations=[];
+  const shell={submit(){}},scope={get:()=>conversation},conversation={input:{for:value=>{assert.equal(value,scope);return shell;}},send:async()=>{}};
+  apply({connection:connected,conversation,sessions:{scope:id=>{assert.equal(id,'s');return scope;}},effect(){},slots:{inject(_name,fn){fn();},register(def,Component){registrations.push({def,Component});return()=>{};}}});
+  assert.equal(registrations.some(({def})=>def.name==='conversation.chat.node'),false,'native tool-call tree must retain file diffs, search, image and question interaction');
+  assert.deepEqual(registrations.filter(({def})=>def.name==='tool.call.toolview').map(({def})=>def.key).sort(),['director_edit_review','director_show_media']);
+  const dock=registrations.find(({def})=>def.name==='conversation.input.dock');
+  assert.equal(dock.def.inject('s').shell,shell);
+});
+
+test('optional GPU status outage leaves ordinary coding send available',async t=>{
+  const GpuStatus=await component('src/client/GpuStatus.jsx','GpuStatus');
+  let sent=0;const shell={submit(){sent++;}};
+  await render(t,GpuStatus,{shell,connection:connected,readStatus:async()=>{throw Error('Comfy offline');},pollMs:10000});
+  await act(()=>shell.submit());await act(()=>new Promise(r=>setTimeout(r,0)));
+  assert.equal(sent,1);
+  assert.doesNotMatch(document.body.textContent,/Sending paused|after verified GPU release/);
+});
+
+test('GPU status outage preserves an already observed active handoff',async t=>{
+  const GpuStatus=await component('src/client/GpuStatus.jsx','GpuStatus');
+  let offline=false,sent=0;const shell={submit(){sent++;}};
+  await render(t,GpuStatus,{shell,connection:connected,readStatus:async()=>{if(offline)throw Error('offline');return {phase:'generating',blocked:true,llm:'unloaded'};},pollMs:10000});
+  offline=true;await act(()=>shell.submit());await act(()=>new Promise(r=>setTimeout(r,0)));
+  assert.equal(sent,0);assert.match(document.body.textContent,/Sending paused/);
+});
+
+test('review displays clip Picture order, shot relevance and each reference image once',async t=>{
   const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
   const value={...media,items:['a','b','c'].map((x,i)=>({...media.items[0],id:x.repeat(43),filename:`ref${i+1}.png`,label:`Asset ${i+1}`,url:`/director-media/${x.repeat(43)}?session=s`}))};
   value.proposal={version:'explicit',clip_references:[{clip_id:'C1',reference_numbers:[2,1,3]}],shots:[{...media.proposal.shots[0],clip_id:'C1',reference_numbers:[1]},{...media.proposal.shots[0],shot_id:'s2',clip_id:'C1',reference_numbers:[2]}]};
   await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(value)),sessionId:'s'});
   assert.deepEqual([...document.querySelectorAll('[data-director-clip-order="C1"] li')].map(e=>e.textContent),['Picture 1 → Reference #2: Asset 2','Picture 2 → Reference #1: Asset 1','Picture 3 → Reference #3: Asset 3']);
-  assert.equal(document.querySelector('[data-shot-id="s1"] .dsh-director-bound-ref span').textContent,'Reference #1 · Picture 2');
-  assert.equal(document.querySelector('[data-director-clip-wide] img').alt,'Asset 3');
+  assert.match(document.querySelector('[data-shot-id="s1"] .dsh-director-shot-refs').textContent,/Reference #1 · Picture 2/);
+  assert.deepEqual([...document.querySelectorAll('[data-director-reference-gallery] img')].map(img=>img.alt),['Asset 1','Asset 2','Asset 3']);
   assert.match(document.querySelector('[data-proposal-status]').textContent,/Awaiting confirmation/);
+});
+
+test('a reference used by several C5 shots has one image preview on the card',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const value={...media,proposal:{...media.proposal,version:'C5',shots:[
+    {...media.proposal.shots[0],shot_id:'C5-S1',clip_id:'C5',reference_numbers:[1]},
+    {...media.proposal.shots[0],shot_id:'C5-S2',clip_id:'C5',reference_numbers:[1]},
+    {...media.proposal.shots[0],shot_id:'C5-S3',clip_id:'C5',reference_numbers:[1]}
+  ]}};
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(value)),sessionId:'s'});
+  assert.equal(document.querySelectorAll('[data-director-reference-gallery] img').length,1);
+  assert.equal(document.querySelectorAll('[data-proposal-version="C5"] img').length,1);
+  for(const id of ['C5-S1','C5-S2','C5-S3'])assert.match(document.querySelector(`[data-shot-id="${id}"]`).textContent,/Reference #1/);
+});
+
+test('final shot review shows each clip planned resolution',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const value={...media,proposal:{...media.proposal,clip_dimensions:[{clip_id:'c1',width:1344,height:768}]}};
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(value)),sessionId:'s'});
+  assert.match(document.querySelector('[data-shot-id="s1"] header').textContent,/Planned size.*1344.*768/);
+});
+
+test('an old review card does not imply an output size it never recorded',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(media)),sessionId:'s'});
+  assert.match(document.querySelector('[data-shot-id="s1"] header').textContent,/Size not specified/);
 });
 
 test('a valid review card renders and awaits fresh confirmation despite an earlier invalid clip map',async t=>{
   const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
   const bad=result('director_show_media',JSON.stringify({...media,proposal:{...media.proposal,version:'bad',clip_references:null}}));
-  const block={...result('director_show_media',JSON.stringify(media)),seq:3};
+  const block={...result('director_show_media',JSON.stringify(media)),seq:3,callId:'valid-card'};
   const nodes=new Map([['bad',{kind:'tool-call',data:{root:bad}}],['current',{kind:'tool-call',data:{root:block}}]]);
   const useChat=selector=>selector({order:['bad','current'],nodes});
   await render(t,MediaCard,{block,sessionId:'s',useChat});
@@ -61,7 +114,7 @@ test('an empty explicit clip does not claim that reference inputs are connected'
 test('an edit against invalid history explains the unknown baseline instead of promising confirmation will repair it',async t=>{
   const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
   const bad=result('director_show_media',JSON.stringify({...media,proposal:{...media.proposal,version:'bad',clip_references:null}}));
-  const block={...result('director_show_media',JSON.stringify(media)),seq:4};
+  const block={...result('director_show_media',JSON.stringify(media)),seq:4,callId:'valid-card'};
   const nodes=new Map([['bad',{kind:'tool-call',data:{root:bad}}],['edit',{kind:'user',data:{seq:3,source:{kind:'user'},content:[{type:'text',text:'Add a reference image'}]}}],['current',{kind:'tool-call',data:{root:block}}]]);
   const useChat=selector=>selector({order:['bad','edit','current'],nodes});
   await render(t,MediaCard,{block,sessionId:'s',useChat});
@@ -81,7 +134,7 @@ test('review card follows human confirmation and superseding versions without lo
   await act(()=>root.render(React.createElement(MediaCard,{block,sessionId:'s',useChat})));
   assert.match(document.querySelector('.dsh-director-awaiting').textContent,/Confirmed/);
   assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'confirmed');
-  nodes.push({key:'next',kind:'tool-call',data:{root:{...block,seq:12,content:[{type:'text',text:JSON.stringify({...media,proposal:{...media.proposal,version:'v4'}})}]}}});
+  nodes.push({key:'next',kind:'tool-call',data:{root:{...block,seq:12,callId:'revised-card',content:[{type:'text',text:JSON.stringify({...media,proposal:{...media.proposal,version:'v4',shots:[{...media.proposal.shots[0],dialogue:'Tea, please.'}]}})}]}}});
   await act(()=>root.render(React.createElement(MediaCard,{block,sessionId:'s',useChat})));
   assert.match(document.querySelector('.dsh-director-awaiting').textContent,/Superseded/);
   assert.ok(document.querySelector('img'));
@@ -167,6 +220,18 @@ test('GPU status keeps editable draft, disables only Send and restores sending a
   await act(()=>document.querySelector('[data-send]').click());assert.equal(sent,1);
 });
 
+test('idle VRAM block offers manual recovery without sending or clearing the draft',async t=>{
+  const GpuStatus=await component('src/client/GpuStatus.jsx','GpuStatus');
+  let status={phase:'releasing_vram',blocked:true,llm:'unloaded'},released=0,sent=0;
+  const shell={submit(){sent++;}};
+  function Composer(){return React.createElement('div',{'data-composer-seat':''},React.createElement(GpuStatus,{shell,connection:connected,readStatus:async()=>status,releaseMemory:async()=>{released++;status={phase:'ready',blocked:false,llm:'unloaded'};},pollMs:10}),React.createElement('textarea',{defaultValue:'C3 draft'}));}
+  await render(t,Composer,{});await act(()=>new Promise(r=>setTimeout(r,20)));
+  const button=document.querySelector('[data-action="release-comfy-vram"]');assert.ok(button);
+  await act(()=>button.click());
+  assert.equal(released,1);assert.equal(sent,0);assert.equal(document.querySelector('textarea').value,'C3 draft');
+  assert.match(document.querySelector('[role="status"]').textContent,/GPU ready/);
+});
+
 test('GPU-ready composer shows transport loss and recovery without clearing or automatically sending its draft',async t=>{
   const GpuStatus=await component('src/client/GpuStatus.jsx','GpuStatus');
   let state='disconnected',sent=0;const listeners=new Set();
@@ -199,12 +264,23 @@ test('review card shows shot dialogue, continuity, version and actual bound imag
   await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(media)),sessionId:'s'});
   const card=document.querySelector('[data-shot-id="s1"]');
   assert.ok(card,'shot card should be present');
-  for(const text of ['Great coffee.','Cup on table.','Cup in hand.','Match cut to Blake.','4','actor-a.png','Actor identity'])assert.ok(card.textContent.includes(text),text);
+  for(const text of ['Great coffee.','Cup on table.','Cup in hand.','Match cut to Blake.','4','Reference #1'])assert.ok(card.textContent.includes(text),text);
   assert.ok(document.querySelector('[data-proposal-version="v3"]'));
-  assert.equal(card.querySelector('img').getAttribute('src'),`/director-media/${mediaId}?session=s`);
-  await act(()=>card.querySelector('[data-action="enlarge"]').click());
+  const image=document.querySelector('[data-director-reference-gallery] img');
+  assert.equal(image.getAttribute('src'),`/director-media/${mediaId}?session=s`);
+  assert.match(document.querySelector('[data-director-reference-gallery]').textContent,/actor-a.png.*Actor identity/s);
+  await act(()=>document.querySelector('[data-director-reference-gallery] [data-action="enlarge"]').click());
   assert.ok(document.querySelector('dialog').open);
   assert.ok(!document.querySelector('[data-action="approve"]'),'presentation cannot fabricate approval');
+});
+
+test('music result renders an inline audio player without an image control',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const audio={...media,proposal:undefined,items:[{id:mediaId,type:'audio',mime:'audio/flac',filename:'song.flac',url:`/director-media/${mediaId}?session=s`}]};
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(audio)),sessionId:'s'});
+  assert.equal(document.querySelector('audio')?.getAttribute('src'),`/director-media/${mediaId}?session=s`);
+  assert.ok(document.querySelector('audio')?.controls);
+  assert.equal(document.querySelector('img'),null);
 });
 
 test('compact tool tree preserves ordered nested calls, logs and visible child failures',async t=>{
@@ -228,9 +304,9 @@ test('Director tools replace their timeline dot with an accessible clapperboard 
   const node={data:{root:result('code_execution','done',false,[result('director_show_media',JSON.stringify(media)),result('director_stage_images','Staged references'),submit,result('submit_comfy_video','Rejected',true),result('read','ordinary tool'),result('director_unrelated','not a plugin tool')])}};
   await render(t,ToolTimeline,{node,sessionId:'s'});
   for(const id of ['director_show_media','director_stage_images','submit-running','submit_comfy_video']){
-    const row=document.querySelector(`[data-chat-call-id="${id}"]`),summary=row.querySelector('summary');
-    assert.equal(summary.querySelectorAll('.dsh-director-node').length,1,'icon must replace, not accompany, the dot');
-    const marker=summary.querySelector('.dsh-director-node');
+    const row=document.querySelector(`[data-chat-call-id="${id}"]`);
+    assert.equal(row.querySelectorAll('.dsh-director-node').length,1,'icon must replace, not accompany, the dot');
+    const marker=row.querySelector('.dsh-director-node');
     assert.equal(marker.getAttribute('aria-label'),'Director tool');
     assert.ok(marker.querySelector('svg'),'Director marker must be a drawn icon, not a platform-dependent emoji');
   }
@@ -256,6 +332,99 @@ test('Director review cards stay visible while completed tool image previews fol
   assert.equal(image.closest('details').open,false);
   await act(()=>image.closest('details').querySelector('summary').click());
   assert.equal(image.closest('details').open,true);
+});
+
+test('a successful review card has no collapsible tool shell',async t=>{
+  const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
+  await render(t,ToolTimeline,{node:{data:{root:result('director_show_media',JSON.stringify(media))}},sessionId:'s'});
+  const row=document.querySelector('[data-chat-call-id="director_show_media"]');
+  assert.ok(row.querySelector('[data-proposal-version="v3"]'));
+  assert.ok(!row.querySelector('details'),'a successful review must not have a collapsible tool shell');
+});
+
+for(const tool of ['director_show_media','director_edit_review'])test(`${tool} shot card survives native turn completion folds and respects manual collapse`,async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  function NativeProcess({closed,revision=0}){
+    const [outerHidden,setOuterHidden]=React.useState(false),[bodyHidden,setBodyHidden]=React.useState(false);
+    const outer=React.useRef(null),body=React.useRef(null);
+    React.useLayoutEffect(()=>{if(closed){setOuterHidden(true);setBodyHidden(true);}},[closed]);
+    React.useLayoutEffect(()=>{if(outerHidden)outer.current.setAttribute('hidden','until-found');else outer.current.removeAttribute('hidden');},[outerHidden]);
+    React.useLayoutEffect(()=>{if(bodyHidden)body.current.setAttribute('hidden','until-found');else body.current.removeAttribute('hidden');},[bodyHidden]);
+    React.useEffect(()=>{
+      const revealOuter=()=>setOuterHidden(false),revealBody=()=>setBodyHidden(false);
+      outer.current.addEventListener('beforematch',revealOuter);body.current.addEventListener('beforematch',revealBody);
+      return ()=>{outer.current?.removeEventListener('beforematch',revealOuter);body.current?.removeEventListener('beforematch',revealBody);};
+    },[]);
+    return React.createElement('div',{'data-step-process':'',ref:outer},
+      React.createElement('button',{'aria-expanded':!bodyHidden,onClick:()=>setBodyHidden(v=>!v)},'Called tools'),
+      React.createElement('div',{'data-step-process-body':'',ref:body},
+        React.createElement(MediaCard,{block:result(tool,JSON.stringify(media)),sessionId:'s',useChat:select=>select({order:['card'],nodes:new Map([['card',{kind:'tool-call',data:{root:result(tool,JSON.stringify(media))},location:{turn:{turn:1,status:closed?'closed':'open'}}}]])})}),
+        React.createElement('span',{},revision)));
+  }
+  const root=await render(t,NativeProcess,{closed:false});
+  await act(()=>root.render(React.createElement(NativeProcess,{closed:true})));
+  await act(()=>new Promise(r=>setTimeout(r,20)));
+  assert.equal(Boolean(document.querySelector('[data-shot-id="s1"]').closest('[hidden]')),false,'turn completion must not hide the review card');
+  assert.ok(document.querySelector('[data-director-reference-gallery] img'));
+  await act(()=>document.querySelector('button[aria-expanded]').click());
+  await act(()=>root.render(React.createElement(NativeProcess,{closed:true,revision:1})));
+  await act(()=>new Promise(r=>setTimeout(r,20)));
+  assert.ok(document.querySelector('[data-step-process-body]').hasAttribute('hidden'),'manual collapse must survive ordinary updates');
+  await act(()=>root.render(React.createElement(NativeProcess,{key:'reloaded',closed:true})));
+  await act(()=>new Promise(r=>setTimeout(r,20)));
+  assert.equal(Boolean(document.querySelector('[data-shot-id="s1"]').closest('[hidden]')),false,'restored completed history must show the shot card');
+});
+
+test('confirm card button sends the exact card identity through a human message and waits for recorded approval',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const value={...media,card_id:'card-version-3'},block={...result('director_show_media',JSON.stringify(value)),seq:10};
+  const nodes=[{key:'card',kind:'tool-call',data:{root:block}}],sent=[];
+  const useChat=select=>select({order:nodes.map(n=>n.key),nodes:new Map(nodes.map(n=>[n.key,n]))});
+  const sendConfirmation=async text=>sent.push(text);
+  const root=await render(t,MediaCard,{block,sessionId:'s',useChat,sendConfirmation});
+  const button=document.querySelector('[data-action="confirm-proposal"]');assert.ok(button);
+  await act(()=>button.click());assert.deepEqual(sent,['确认卡片 card-version-3']);
+  assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'awaiting_confirmation','a send attempt itself must never be approval evidence');
+  nodes.push({key:'confirm',kind:'user',data:{seq:11,source:{kind:'user'},content:[{type:'text',text:sent[0]}]}});
+  await act(()=>root.render(React.createElement(MediaCard,{block,sessionId:'s',useChat,sendConfirmation})));
+  assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'confirmed');
+  assert.equal(Boolean(document.querySelector('[data-action="confirm-proposal"]')),false);
+});
+
+test('invalid saved proposal still shows its media with an explanation and no approval control',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const value={...media,card_id:'bad-card',proposal:{...media.proposal,shots:[]}};
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(value)),sessionId:'s',sendConfirmation:async()=>{throw Error('must not approve');}});
+  assert.ok(document.querySelector('img'));assert.match(document.querySelector('[role="alert"]').textContent,/proposal.*invalid/i);
+  assert.equal(Boolean(document.querySelector('[data-action="confirm-proposal"]')),false);
+});
+
+test('a successful video result has no collapsible tool shell',async t=>{
+  const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
+  const video={...media,proposal:undefined,items:[{id:mediaId,type:'video',mime:'video/mp4',filename:'clip.mp4',url:`/director-media/${mediaId}?session=s`}]};
+  await render(t,ToolTimeline,{node:{data:{root:result('director_show_media',JSON.stringify(video))}},sessionId:'s'});
+  const row=document.querySelector('[data-chat-call-id="director_show_media"]');
+  assert.ok(row.querySelector('video'));
+  assert.ok(!row.querySelector('details'),'a successful video must not have a collapsible tool shell');
+});
+
+test('an edited review card has no collapsible tool shell',async t=>{
+  const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
+  await render(t,ToolTimeline,{node:{data:{root:result('director_edit_review',JSON.stringify(media))}},sessionId:'s'});
+  const row=document.querySelector('[data-chat-call-id="director_edit_review"]');
+  assert.ok(row.querySelector('[data-proposal-version="v3"]'));
+  assert.ok(!row.querySelector('details'),'an edited review must not have a collapsible tool shell');
+});
+
+test('ordinary results still fold and failed media keeps inspectable error details',async t=>{
+  const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
+  const node={data:{root:result('code_execution','Done',false,[result('read','Scanned files'),result('director_show_media','Missing file',true)])}};
+  await render(t,ToolTimeline,{node,sessionId:'s'});
+  const ordinary=document.querySelector('[data-chat-call-id="read"] details');
+  const failed=document.querySelector('[data-chat-call-id="director_show_media"] details');
+  assert.equal(ordinary.open,false);
+  assert.equal(failed.open,false);
+  assert.match(document.querySelector('[data-chat-call-id="director_show_media"]').textContent,/Missing file/);
 });
 
 test('current call opens automatically then folds on completion without losing results or previews',async t=>{
@@ -287,18 +456,18 @@ test('nested current child opens instead of its running parent and settled sibli
   assert.equal(detail('parent').open,false);assert.equal(detail('child').open,false);assert.equal(detail('next').open,true);
 });
 
-test('completed video galleries stay outside folded tool details',async t=>{
+test('completed video galleries stay visible without a collapsible tool shell',async t=>{
   const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
   const video={...media,proposal:undefined,items:[{id:mediaId,type:'video',mime:'video/mp4',filename:'clip.mp4',label:'Finished clip',url:`/director-media/${mediaId}?session=s`}]};
   await render(t,ToolTimeline,{node:{data:{root:result('director_show_media',JSON.stringify(video))}},sessionId:'s'});
-  assert.equal(document.querySelector('details').open,false);
+  assert.ok(!document.querySelector('details'));
   assert.ok(document.querySelector('video'));assert.equal(document.querySelector('video').closest('details'),null);
 });
 
-test('incremental review cards remain visible outside folded logs with the director icon',async t=>{
+test('incremental review cards remain visible without a collapsible tool shell and keep the director icon',async t=>{
   const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
   await render(t,ToolTimeline,{node:{data:{root:result('director_edit_review',JSON.stringify(media))}},sessionId:'s'});
-  assert.equal(document.querySelector('details').open,false);
+  assert.ok(!document.querySelector('details'));
   assert.ok(document.querySelector('img'));assert.equal(document.querySelector('img').closest('details'),null);
   assert.ok(document.querySelector('[aria-label="Director tool"]'));
 });
@@ -325,11 +494,28 @@ test('parallel running children remain open and one completion does not fold the
   assert.equal(detail('a').open,false);assert.equal(detail('b').open,true);
 });
 
+test('native preparing calls wait for arguments instead of claiming they left the history window',async t=>{
+  const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
+  const preparing={phase:'preparing',callId:'preparing',name:'pwsh',turn:1,step:2,time:1000,subCalls:[]};
+  const root=await render(t,ToolTimeline,{node:{data:{root:preparing}},sessionId:'s'});
+  assert.equal(document.querySelector('details').open,true);
+  assert.match(document.querySelector('.dsh-director-tool-log').textContent,/Preparing tool arguments/);
+  assert.doesNotMatch(document.body.textContent,/history window|not been loaded/i);
+  await act(()=>root.render(React.createElement(ToolTimeline,{node:{data:{root:{...preparing,phase:'start',argsRaw:'{"command":"Get-Date"}'}}},sessionId:'s'})));
+  assert.match(document.querySelector('.dsh-director-tool-log pre').textContent,/Get-Date/);
+  assert.doesNotMatch(document.body.textContent,/Preparing tool arguments/);
+});
+
 test('window-cut tool results remain inspectable without a call head',async t=>{
   const ToolTimeline=await component('src/client/ToolTimeline.jsx','ToolTimeline');
-  await render(t,ToolTimeline,{node:{data:{root:{...result('orphan','Saved output'),call:null}}},sessionId:'s',inspectCall:()=>{}});
+  let inspected;
+  await render(t,ToolTimeline,{node:{data:{root:{...result('orphan','Saved output'),call:null}}},sessionId:'s',inspectCall:id=>{inspected=id;}});
   assert.ok(document.querySelector('summary').textContent.includes('orphan'));
   assert.ok(document.body.textContent.includes('Saved output'));
+  assert.match(document.body.textContent,/Call arguments have not been loaded/);
+  assert.doesNotMatch(document.body.textContent,/Preparing tool arguments|outside.*history window/i);
+  await act(()=>document.querySelector('.dsh-director-tool-log button').click());
+  assert.equal(inspected,'orphan');
 });
 
 test('nonzero shell exits and killed signals remain visible even with isError false',async t=>{
@@ -369,6 +555,6 @@ test('tool states, accessible region and fallback log instructions render in Eng
   const root={callId:'running',name:'code_execution',argsRaw:'{}',time:1000,subCalls:[failed,file]};
   await render(t,ToolTimeline,{node:{data:{root}},sessionId:'s',inspectCall:()=>{}});
   assert.equal(document.querySelector('section').getAttribute('aria-label'),'Tool execution nodes');
-  for(const label of ['Running','Failed','Returned','Arguments','Results','Full results (including attachments)','View call details','Call arguments are outside the current history window.','Tool call failed. Expand for details.'])assert.ok(document.body.textContent.includes(label),label);
+  for(const label of ['Running','Failed','Returned','Arguments','Results','Full results (including attachments)','View call details','Call arguments have not been loaded.','Open call details or load earlier messages.','Tool call failed. Expand for details.'])assert.ok(document.body.textContent.includes(label),label);
   assert.doesNotMatch(document.body.textContent,/\p{Script=Han}/u);
 });

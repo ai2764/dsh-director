@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,unlink,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,unlink,symlink,rename,stat,utimes,open} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {localFs} from './harness.mjs';
@@ -30,6 +30,45 @@ test('changed same-size bytes and deleted sources cannot replay under original I
   await assert.rejects(f.store.openVerified(item.id,'session-test'),/changed/i);
   await unlink(f.path);await assert.rejects(f.store.openVerified(item.id,'session-test'),/unavailable/i);
 });
+test('archived playback survives source moves, replacement and deletion while production rejects them',async()=>{
+  const f=await fixture(),item=await f.store.register(f.input),moved=join(f.cwd,'renamed.png');
+  const assertPlayback=async store=>{
+    const opened=await (store.openForPlayback??store.openVerified)(item.id,'session-test');
+    try{assert.deepEqual(await opened.handle.readFile(),png);}finally{await opened.handle.close();}
+  };
+  await rename(f.path,moved);
+  await assertPlayback(f.store);
+  await assert.rejects((f.store.openOriginal??f.store.openVerified)(item.id,'session-test'),/unavailable/i);
+  const changed=Buffer.from(png);changed[30]^=1;await writeFile(f.path,changed);
+  await assertPlayback(f.store);
+  await assert.rejects((f.store.openOriginal??f.store.openVerified)(item.id,'session-test'),/changed/i);
+  await unlink(f.path);
+  const {createMediaStore}=await import('../src/media-store.mjs');
+  await assertPlayback(createMediaStore({root:join(f.root,'media')}));
+  await assert.rejects((f.store.openForPlayback??f.store.openVerified)(item.id,'other'),/not found/i);
+});
+test('unchanged snapshots reuse integrity verification and detect same-size tampering with restored mtime',async t=>{
+  const f=await fixture(),item=await f.store.register(f.input),snapshot=join(f.root,'media',item.id+'.bin');
+  const probe=await open(snapshot,'r'),prototype=Object.getPrototypeOf(probe),read=prototype.read;
+  await probe.close();let reads=0;
+  prototype.read=async function(...args){reads++;return read.apply(this,args);};
+  t.after(()=>{prototype.read=read;});
+  const first=await (f.store.openForPlayback??f.store.openVerified)(item.id,'session-test');await first.handle.close();
+  assert.ok(reads>0);reads=0;
+  for(let i=0;i<3;i++){const next=await (f.store.openForPlayback??f.store.openVerified)(item.id,'session-test');await next.handle.close();}
+  assert.equal(reads,0,'unchanged Range/HEAD requests must not hash the full snapshot again');
+  const before=await stat(snapshot),changed=Buffer.from(png);changed[30]^=1;
+  await writeFile(snapshot,changed);await utimes(snapshot,before.atime,before.mtime);
+  await assert.rejects((f.store.openForPlayback??f.store.openVerified)(item.id,'session-test'),/stored media changed/i);
+  assert.ok(reads>0,'a changed stat must force content verification');
+});
+test('missing and corrupt snapshots remain explicit archive errors even with a valid source',async()=>{
+  const f=await fixture(),item=await f.store.register(f.input),snapshot=join(f.root,'media',item.id+'.bin');
+  await writeFile(snapshot,'bad');
+  await assert.rejects((f.store.openForPlayback??f.store.openVerified)(item.id,'session-test'),/stored media changed/i);
+  await unlink(snapshot);
+  await assert.rejects((f.store.openForPlayback??f.store.openVerified)(item.id,'session-test'),/stored media unavailable/i);
+});
 test('outside workspace is refused without inspected-source authorization',async()=>{
   const f=await fixture();const path=join(f.root,'outside.png');await writeFile(path,png);
   await assert.rejects(f.store.register({...f.input,path}),/outside/i);
@@ -42,6 +81,20 @@ test('extensionless uploaded image can display without renaming or changing sour
   const item=await f.store.register({...f.input,path,externalEvidence:true});
   assert.equal(item.type,'image');assert.equal(item.mime,'image/png');assert.equal(item.filename,'attachment-hash.png');
   const opened=await f.store.openVerified(item.id,'session-test');assert.equal(opened.source,path);await opened.handle.close();
+});
+test('generated FLAC and MP3 audio can be registered, but mislabeled bytes are rejected',async()=>{
+  const f=await fixture();
+  for(const [name,bytes,mime] of [
+    ['song.flac',Buffer.from('664c614300000022','hex'),'audio/flac'],
+    ['song.mp3',Buffer.from('49443304000000000000','hex'),'audio/mpeg']
+  ]){
+    const path=join(f.cwd,name);await writeFile(path,bytes);
+    const item=await f.store.register({...f.input,path});
+    assert.equal(item.type,'audio');assert.equal(item.mime,mime);
+    const opened=await f.store.openVerified(item.id,'session-test');assert.equal(opened.size,bytes.length);await opened.handle.close();
+  }
+  const bad=join(f.cwd,'bad.flac');await writeFile(bad,Buffer.from('not audio'));
+  await assert.rejects(f.store.register({...f.input,path:bad}),/signature/i);
 });
 test('signature mismatch, URLs, symlink escape, unmapped backend and cancellation fail closed',async()=>{
   const f=await fixture();await writeFile(f.path,'<html>not an image</html>');

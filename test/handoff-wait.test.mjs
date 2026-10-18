@@ -1,13 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {harnessRequire} from './harness.mjs'
-import {createSubmitComfyVideo} from '../src/submit-comfy-video.mjs'
+import {createSubmitComfyVideo,startManagedJob} from '../src/submit-comfy-video.mjs'
 
 const GiB = 1024 ** 3
 const idle = {queue_running: [], queue_pending: []}
 const stats = free => ({devices: [{type: 'cuda', index: 0, vram_total: 24 * GiB,
   vram_free: free, torch_vram_total: 0, torch_vram_free: 0}]})
 const flush = () => new Promise(resolve => setImmediate(resolve))
+const jobText = (jobs, id) => typeof jobs.events?.subscribe === 'function'
+  ? jobs.readAt(id, 0).chunks.at(-1)?.text?.trim() ?? ''
+  : jobs.read(id).text
+const observeNotices = (jobs, notices) => typeof jobs.events?.subscribe === 'function'
+  ? jobs.events.subscribe({owners:'all'}, event => {
+      if(event.type === 'settled' && event.cause === 'producer' && !event.awaited)notices.push(event.job.id)
+    })
+  : jobs.onJobDone(snapshot => {if (!snapshot.reported) notices.push(snapshot.id)})
 
 // Real Harness registry, fake external HTTP and a manually advanced clock only.
 async function fixture(t, mode = 'memory', failed = false) {
@@ -16,10 +24,10 @@ async function fixture(t, mode = 'memory', failed = false) {
   const jobs = new LocalJobRegistry(new Context(), {maxConcurrentJobsPerOwner: 10})
   jobs.attachController('handoff-test')
   const notices = [], calls = [], pauses = []
-  jobs.onJobDone(snapshot => {if (!snapshot.reported) notices.push(snapshot.id)})
+  observeNotices(jobs, notices)
   let clock = 0, recovered = false
   const submit = createSubmitComfyVideo({
-    startJob: spec => jobs.start(spec),
+    startJob: spec => startManagedJob(jobs, spec),
     now: () => clock, releaseTimeoutMs: mode === 'free-hang' ? 10_000 : 2, historyPollIntervalMs: 1,
     handoffRetryIntervalMs: 5_000,
     sleep: ms => {
@@ -81,7 +89,7 @@ for (const mode of ['memory', 'busy', 'free', 'malformed', 'cache']) {
     const f = await fixture(t, mode)
     assert.equal(f.jobs.get(f.id).status, 'running')
     assert.deepEqual(f.notices, [])
-    const output = JSON.parse(f.jobs.read(f.id).text)
+    const output = JSON.parse(jobText(f.jobs, f.id))
     assert.equal(output.phase, 'waiting_for_vram')
     assert.equal(output.execution_status, 'completed')
     assert.equal(output.output_files[0], 'clip.mp4')
@@ -93,10 +101,10 @@ for (const mode of ['memory', 'busy', 'free', 'malformed', 'cache']) {
     await f.recover()
     assert.equal(f.jobs.get(f.id).status, 'completed')
     assert.deepEqual(f.notices, [f.id])
-    const final = f.jobs.read(f.id).text
+    const final = jobText(f.jobs, f.id)
     assert.equal(JSON.parse(final).comfy_release.verified, true)
     assert.equal(JSON.parse(final).phase, 'ready_for_review')
-    assert.equal(f.jobs.read(f.id).text, final, 'terminal output remains idempotently readable')
+    assert.equal(jobText(f.jobs, f.id), final, 'terminal output remains idempotently readable')
     assert.equal(f.calls.filter(c => c.path === '/history/p').length, 1)
   })
 }
@@ -104,7 +112,7 @@ for (const mode of ['memory', 'busy', 'free', 'malformed', 'cache']) {
 test('failed generation also waits for safe handoff, preserving its original error', async t => {
   const f = await fixture(t, 'memory', true)
   assert.equal(f.jobs.get(f.id).status, 'running')
-  const pending = JSON.parse(f.jobs.read(f.id).text)
+  const pending = JSON.parse(jobText(f.jobs, f.id))
   assert.equal(pending.execution_status, 'failed')
   assert.match(pending.execution_detail, /CUDA OOM/)
   await f.recover()
@@ -119,9 +127,9 @@ test('cancelling a waiting handoff preserves artifacts without a model wake or q
   f.jobs.kill(f.id)
   await flush()
   assert.equal(f.jobs.get(f.id).status, 'killed')
-  assert.equal(f.jobs.get(f.id).reported, true)
+  if (typeof f.jobs.events?.subscribe !== 'function') assert.equal(f.jobs.get(f.id).reported, true)
   assert.deepEqual(f.notices, [])
-  const output = JSON.parse(f.jobs.read(f.id).text)
+  const output = JSON.parse(jobText(f.jobs, f.id))
   assert.equal(output.output_files[0], 'clip.mp4')
   assert.equal(output.execution_status, 'completed')
   assert.equal(output.phase, 'cancelled')
@@ -142,7 +150,7 @@ test('history transport errors remain readable and cannot wake a model before ha
   const f = await fixture(t, 'history')
   assert.equal(f.jobs.get(f.id).status, 'running')
   assert.deepEqual(f.notices, [])
-  const output = JSON.parse(f.jobs.read(f.id).text)
+  const output = JSON.parse(jobText(f.jobs, f.id))
   assert.equal(output.phase, 'waiting_for_history')
   assert.match(output.monitor_error, /503/)
   await f.recover()
@@ -158,9 +166,9 @@ test('cancelling before initial LLM unload finishes immediately stops the monito
   let id, finishUnload, concluded = false
   const unload = new Promise(resolve => {finishUnload = resolve})
   const calls = [], notices = []
-  jobs.onJobDone(snapshot => {if (!snapshot.reported) notices.push(snapshot.id)})
+  observeNotices(jobs, notices)
   const submit = createSubmitComfyVideo({
-    startJob(spec) {id = jobs.start(spec); return id},
+    startJob(spec) {id = startManagedJob(jobs, spec); return id},
     fetchImpl: async (url, init = {}) => {
       const path = new URL(url).pathname
       calls.push({path, body: init.body})
@@ -177,7 +185,7 @@ test('cancelling before initial LLM unload finishes immediately stops the monito
   await flush()
   assert.equal(concluded, false, 'unload is still stalled during cancellation')
   assert.equal(jobs.get(id).status, 'killed', 'monitor must not depend on unload completing to stop')
-  assert.equal(jobs.get(id).reported, true)
+  if (typeof jobs.events?.subscribe !== 'function') assert.equal(jobs.get(id).reported, true)
   assert.deepEqual(notices, [])
   assert.equal(calls.some(c => c.path.startsWith('/history') || c.path === '/free'), false)
   assert.deepEqual(JSON.parse(calls.find(c => c.path === '/queue').body), {delete: ['p']})
@@ -188,16 +196,16 @@ for (const [mode, phase] of [['free-hang', 'waiting_for_vram'], ['monitor-fault'
     const f = await fixture(t, mode)
     assert.equal(f.jobs.get(f.id).status, 'running')
     assert.deepEqual(f.notices, [])
-    const waiting = JSON.parse(f.jobs.read(f.id).text)
+    const waiting = JSON.parse(jobText(f.jobs, f.id))
     assert.equal(waiting.phase, phase)
     assert.equal(waiting.output_files[0], 'clip.mp4', 'artifacts are readable even before cleanup returns')
     if (mode === 'monitor-fault') assert.match(waiting.monitor_error, /retry timer failed/)
     f.jobs.kill(f.id)
     await flush()
     assert.equal(f.jobs.get(f.id).status, 'killed')
-    assert.equal(f.jobs.get(f.id).reported, true)
+    if (typeof f.jobs.events?.subscribe !== 'function') assert.equal(f.jobs.get(f.id).reported, true)
     assert.deepEqual(f.notices, [])
-    const cancelled = JSON.parse(f.jobs.read(f.id).text)
+    const cancelled = JSON.parse(jobText(f.jobs, f.id))
     assert.equal(cancelled.phase, 'cancelled')
     assert.equal(cancelled.output_files[0], 'clip.mp4')
     assert.equal(f.calls.some(c => c.path === '/queue' && c.body), false)

@@ -16,10 +16,11 @@ test('real registry gives project skills priority over the bundled provider',asy
   remove();assert.equal(await registry.get('h3-prompt-writing'),undefined);removeProject();
 });
 test('host entry owns reference staging, media and both submit tools with declared dependencies',async()=>{
-  const entry=await import('../src/index.mjs');const names=[],effects=[];
-  await entry.apply({skills:{registerProvider(fn){fn();return ()=>{};}},tools:{register(t){names.push(t.name);return ()=>{};}},
+  const entry=await import('../src/index.mjs');const names=[],effects=[],guards=[];
+  await entry.apply({skills:{registerProvider(fn){fn();return ()=>{};}},tools:{register(t){names.push(t.name);return ()=>{};},guard(fn){guards.push(fn);return ()=>{};}},
     jobs:{start(){}},fs:{},connection:{requestRejection(){}},webServer:{register(){return ()=>{};}},inject(){},effect(fn){const d=fn();effects.push(d);}});
-  assert.deepEqual(names.sort(),['director_assets','director_edit_review','director_show_media','director_stage_images','submit_comfy_job','submit_comfy_video']);
+  assert.deepEqual(names.sort(),['director_assets','director_edit_review','director_show_media','director_stage_images','director_workflows','submit_comfy_job','submit_comfy_video']);
+  assert.equal(guards.length,0,'plugin tools must not intercept native Harness shell calls');
   assert.deepEqual(entry.inject,['tools','jobs','skills','fs','connection','webServer','attachments']);
   for(const dispose of effects)dispose?.();
 });
@@ -29,7 +30,7 @@ test('real Cordis lifecycle keeps H3 setup optional and registers it when a huma
   const entry=await import('../src/index.mjs');
   for(const withQuestions of [false,true]){
     const ctx=new Context(),names=new Set();
-    ctx.provide('tools',{register(tool){names.add(tool.name);return ()=>names.delete(tool.name);}});
+    ctx.provide('tools',{register(tool){names.add(tool.name);return ()=>names.delete(tool.name);},guard(){return ()=>{};}});
     ctx.provide('jobs',{start(){throw Error('No job should start');}});
     ctx.provide('skills',{registerProvider(){return ()=>{};}});
     ctx.provide('fs',{});ctx.provide('attachments',{});

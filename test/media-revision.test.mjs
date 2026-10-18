@@ -14,7 +14,7 @@ async function fixture(t){
   for(const [i,name] of ['actor','room','teal','red'].entries())await writeFile(join(cwd,name+'.png'),Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.alloc(8,i)]));
   const session={id:'test-revision',header:{cwd},snapshotEvents:()=>events};
   const tool=createMediaTool({store:createMediaStore({root:join(cwd,'store')}),fs:localFs()});
-  const add=value=>events.push({seq:events.length+1,type:'tool/result',data:{message:{content:[{type:'tool-result',toolCallId:'c'+events.length,content:[{type:'text',text:JSON.stringify(value)}]}]}}});
+  const add=value=>{const callId='c'+events.length;events.push({seq:events.length+1,type:'tool/call',data:{callId,name:'director_show_media'}},{seq:events.length+2,type:'tool/result',data:{message:{role:'tool',toolCallId:callId,source:{kind:'tool',callId},content:[{type:'text',text:JSON.stringify(value)}]}}});};
   const user=text=>events.push({seq:events.length+1,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text}]}});
   const run=async args=>{const value=await tool.execute(args,{agent:{session}});add(value);return value};
   const base=await run({items:[{path:'actor.png',responsibility:'Actor identity'},{path:'room.png',responsibility:'Scene'}],proposal:{version:'v1',shots:[{shot_id:'S1',clip_id:'C1',duration_seconds:6,content:'Alex addresses an empty sofa.',dialogue:'The sample is ready.',reference_numbers:[1,2]},{shot_id:'S2',clip_id:'C2',duration_seconds:4,content:'The empty room.',reference_numbers:[2]}]}});
@@ -95,6 +95,31 @@ test('shot-only revisions preserve media and unrelated fields',async t=>{
   assert.deepEqual(next.proposal.shots[1],f.base.proposal.shots[1]);
 });
 
+test('a size-only review revision adds per-clip dimensions without rewriting shots or references',async t=>{
+  const f=await fixture(t),dimensions=[{clip_id:'C1',width:1344,height:768},{clip_id:'C2',width:1344,height:768}];
+  const edit=mediaTools.createEditReviewTool(f.tool);
+  const next=await edit.execute({base_card_id:f.base.card_id,operation:'shots',clip_dimensions:dimensions},{agent:{session:f.session}});
+  f.add(next);
+  assert.deepEqual(next.proposal.clip_dimensions,dimensions);
+  assert.deepEqual(next.proposal.shots,f.base.proposal.shots);
+  assert.deepEqual(next.items.map(x=>x.sha256),f.base.items.map(x=>x.sha256));
+  assert.equal(proposalState(entriesFromEvents(f.events),next.proposal.version).status,'awaiting_confirmation');
+});
+
+test('a workflow-only review revision records inspected handoffs without changing media',async t=>{
+  const f=await fixture(t),workflows=[
+    {clip_id:'C1',workflow_path:'C:/film/C1.json',continuity_mode:'none'},
+    {clip_id:'C2',workflow_path:'C:/film/C2.json',continuity_mode:'video_frames',continuity_source:'C1.mp4'}
+  ];
+  const edit=mediaTools.createEditReviewTool(f.tool);
+  const next=await edit.execute({base_card_id:f.base.card_id,operation:'shots',clip_workflows:workflows},{agent:{session:f.session}});
+  f.add(next);
+  assert.deepEqual(next.proposal.clip_workflows,workflows);
+  assert.deepEqual(next.proposal.shots,f.base.proposal.shots);
+  assert.deepEqual(next.items.map(x=>x.sha256),f.base.items.map(x=>x.sha256));
+  assert.equal(proposalState(entriesFromEvents(f.events),next.proposal.version).status,'awaiting_confirmation');
+});
+
 test('Picture tags follow per-clip binding order, not global card numbers',async t=>{
   const f=await fixture(t);
   const marked=await f.run({items:[{path:'actor.png'},{path:'room.png'},{path:'teal.png'}],proposal:{version:'multi',shots:[{...f.base.proposal.shots[0],reference_numbers:[1,2]},{...f.base.proposal.shots[1],content:'Room from <Picture 1> and costume from <Picture 2>.',reference_numbers:[2,3]}]}});
@@ -104,11 +129,11 @@ test('Picture tags follow per-clip binding order, not global card numbers',async
 });
 
 test('revision refuses a newer card published while source verification is pending',async t=>{
-  const f=await fixture(t),store=createMediaStore({root:join(f.cwd,'store')}),openVerified=store.openVerified;
+  const f=await fixture(t),store=createMediaStore({root:join(f.cwd,'store')}),openOriginal=store.openOriginal;
   let inserted=false;
-  store.openVerified=async(...args)=>{
+  store.openOriginal=async(...args)=>{
     if(!inserted){inserted=true;await f.run({items:[{path:'red.png'}],proposal:{version:'concurrent',shots:[{...f.base.proposal.shots[0],reference_numbers:[1]}]}});}
-    return openVerified(...args);
+    return openOriginal(...args);
   };
   const tool=createMediaTool({store,fs:localFs()});
   await assert.rejects(tool.execute({revision:{base_card_id:f.base.card_id,version:'late',shot_changes:[{shot_id:'S1',dialogue:'Late edit.'}]}},{agent:{session:{id:'test-revision',header:{cwd:f.cwd},snapshotEvents:()=>f.events}}}),/stale|latest|newer/i);
